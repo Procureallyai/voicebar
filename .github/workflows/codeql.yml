@@ -1,0 +1,57 @@
+name: codeql
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  security-events: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  analyze:
+    name: Analyze Swift
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read pinned xcodegen version
+        id: xcodegen-version
+        run: echo "value=$(tr -d '[:space:]' < .xcodegen-version)" >> "$GITHUB_OUTPUT"
+
+      - name: Install xcodegen
+        run: |
+          curl -Ls "https://github.com/yonaskolb/XcodeGen/releases/download/${{ steps.xcodegen-version.outputs.value }}/xcodegen.zip" -o "$RUNNER_TEMP/xcodegen.zip"
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
+          "$RUNNER_TEMP/xcodegen/install.sh" "$RUNNER_TEMP/xcodegen-root"
+          export PATH="$RUNNER_TEMP/xcodegen-root/bin:$PATH"
+          echo "$RUNNER_TEMP/xcodegen-root/bin" >> "$GITHUB_PATH"
+          xcodegen --version
+
+      - name: Report toolchain truth
+        run: |
+          xcode-select -p
+          swift --version
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: swift
+
+      - name: Build for CodeQL analysis
+        run: bash scripts/build.sh
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v4
