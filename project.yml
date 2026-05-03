@@ -1,0 +1,60 @@
+name: VoiceBar
+
+options:
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: 6.0
+    MACOSX_DEPLOYMENT_TARGET: 15.0
+    OTHER_SWIFT_FLAGS: "$(inherited) -package-name VoiceBar"
+
+packages:
+  ArgmaxOSS:
+    url: https://github.com/argmaxinc/argmax-oss-swift.git
+    exactVersion: 0.18.0
+
+targets:
+  VoiceBarCore:
+    type: framework
+    platform: macOS
+    deploymentTarget: "15.0"
+    sources:
+      - path: Sources/VoiceBarCore
+    dependencies:
+      - package: ArgmaxOSS
+        product: TTSKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ai.procureally.voicebar.core
+        PRODUCT_NAME: VoiceBarCore
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+        DEVELOPMENT_TEAM: ""
+
+  VoiceBar:
+    type: application
+    platform: macOS
+    deploymentTarget: "15.0"
+    sources:
+      - path: Sources/VoiceBarApp
+    dependencies:
+      - target: VoiceBarCore
+        embed: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ai.procureally.voicebar
+        PRODUCT_NAME: VoiceBar
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Config/VoiceBar-Info.plist
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+        DEVELOPMENT_TEAM: ""
+
+schemes:
+  VoiceBar:
+    build:
+      targets:
+        VoiceBarCore: all
+        VoiceBar: all

@@ -1,0 +1,45 @@
+# macOS
+.DS_Store
+
+# Xcode / SwiftPM
+DerivedData/
+build/
+.build/
+xcuserdata/
+*.xcuserstate
+
+# Logs / temp
+*.log
+tmp/
+
+# Secrets
+.env
+.env.*
+
+# Public-release hygiene
+wispr-flow-snippets-private-export*.json
+wispr-flow-snippets-redacted-manifest*.json
+wispr-flow-snippets-preview-report*.json
+wispr-flow-snippets-apply-report*.json
+dictation-snippets*.private*.json
+dictation-actions*.private*.json
+private-snippets/
+private-reports/
+local-diagnostics/
+diagnostic-dumps/
+request-dumps/
+response-dumps/
+transcripts/
+screenshots/
+screen-recordings/
+demo-recordings/
+remotion-renders/private/
+*.crash
+*.ips
+*.diag
+*.har
+*.mov
+*.mp4
+*.webm
+*.m4a
+*.wav
