@@ -8,6 +8,34 @@ public enum DictationFormattingMode: String, Codable, Sendable, CaseIterable {
     case notes = "Notes"
 }
 
+public enum DictationFormatterQualityMode: String, Codable, Sendable, CaseIterable {
+    case fast = "Fast"
+    case balanced = "Balanced"
+    case quality = "Quality"
+
+    public var timeoutSeconds: TimeInterval {
+        switch self {
+        case .fast:
+            return 2
+        case .balanced:
+            return 4
+        case .quality:
+            return 8
+        }
+    }
+
+    public var operatorSummary: String {
+        switch self {
+        case .fast:
+            return "Fast: shortest formatter timeout, strongest deterministic fallback."
+        case .balanced:
+            return "Balanced: more time for punctuation, capitalization, and light structure."
+        case .quality:
+            return "Quality: longest local formatter window for polished writing."
+        }
+    }
+}
+
 public enum DictationDetectedMode: String, Codable, Sendable {
     case dictation
     case command
@@ -202,6 +230,7 @@ public struct DictationActionCandidate: Equatable, Codable, Sendable {
 public struct DictationFormattingRequest: Equatable, Codable, Sendable {
     public var transcript: String
     public var formattingMode: DictationFormattingMode
+    public var qualityMode: DictationFormatterQualityMode
     public var formatterModelIdentifier: String
     public var frontmostBundleIdentifier: String?
     public var rollingContext: [String]
@@ -210,6 +239,7 @@ public struct DictationFormattingRequest: Equatable, Codable, Sendable {
     public init(
         transcript: String,
         formattingMode: DictationFormattingMode,
+        qualityMode: DictationFormatterQualityMode = .balanced,
         formatterModelIdentifier: String,
         frontmostBundleIdentifier: String?,
         rollingContext: [String],
@@ -217,6 +247,7 @@ public struct DictationFormattingRequest: Equatable, Codable, Sendable {
     ) {
         self.transcript = transcript
         self.formattingMode = formattingMode
+        self.qualityMode = qualityMode
         self.formatterModelIdentifier = formatterModelIdentifier
         self.frontmostBundleIdentifier = frontmostBundleIdentifier
         self.rollingContext = rollingContext
@@ -302,6 +333,79 @@ public struct DictationPipelineResult: Equatable, Sendable {
         self.formatterPath = formatterPath
         self.formatterUsedFallback = formatterUsedFallback
         self.latencyBreakdown = latencyBreakdown
+    }
+}
+
+public struct DictationHistoryEntry: Identifiable, Equatable, Codable, Sendable {
+    public var id: String
+    public var createdAt: Date
+    public var rawTranscript: String
+    public var formattedText: String
+    public var formatterPath: DictationFormatterPath
+    public var formatterModelIdentifier: String
+    public var frontmostBundleIdentifier: String?
+    public var insertionSummary: String
+    public var rawTranscriptCharacterCount: Int
+    public var formattedCharacterCount: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case createdAt
+        case rawTranscript
+        case formattedText
+        case formatterPath
+        case formatterModelIdentifier
+        case frontmostBundleIdentifier
+        case insertionSummary
+        case rawTranscriptCharacterCount
+        case formattedCharacterCount
+    }
+
+    public init(
+        id: String = UUID().uuidString,
+        createdAt: Date = Date(),
+        rawTranscript: String,
+        formattedText: String,
+        formatterPath: DictationFormatterPath,
+        formatterModelIdentifier: String,
+        frontmostBundleIdentifier: String?,
+        insertionSummary: String,
+        rawTranscriptCharacterCount: Int? = nil,
+        formattedCharacterCount: Int? = nil
+    ) {
+        self.id = id
+        self.createdAt = createdAt
+        self.rawTranscript = rawTranscript
+        self.formattedText = formattedText
+        self.formatterPath = formatterPath
+        self.formatterModelIdentifier = formatterModelIdentifier
+        self.frontmostBundleIdentifier = frontmostBundleIdentifier
+        self.insertionSummary = insertionSummary
+        self.rawTranscriptCharacterCount = rawTranscriptCharacterCount ?? rawTranscript.count
+        self.formattedCharacterCount = formattedCharacterCount ?? formattedText.count
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let rawTranscript = try container.decode(String.self, forKey: .rawTranscript)
+        let formattedText = try container.decode(String.self, forKey: .formattedText)
+
+        id = try container.decode(String.self, forKey: .id)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        self.rawTranscript = rawTranscript
+        self.formattedText = formattedText
+        formatterPath = try container.decode(DictationFormatterPath.self, forKey: .formatterPath)
+        formatterModelIdentifier = try container.decode(String.self, forKey: .formatterModelIdentifier)
+        frontmostBundleIdentifier = try container.decodeIfPresent(String.self, forKey: .frontmostBundleIdentifier)
+        insertionSummary = try container.decode(String.self, forKey: .insertionSummary)
+        rawTranscriptCharacterCount = try container.decodeIfPresent(
+            Int.self,
+            forKey: .rawTranscriptCharacterCount
+        ) ?? rawTranscript.count
+        formattedCharacterCount = try container.decodeIfPresent(
+            Int.self,
+            forKey: .formattedCharacterCount
+        ) ?? formattedText.count
     }
 }
 

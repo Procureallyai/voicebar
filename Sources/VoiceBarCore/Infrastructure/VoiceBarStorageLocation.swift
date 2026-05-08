@@ -77,6 +77,10 @@ public enum VoiceBarStorageLocation {
         fileURL(named: "dictation-actions.json")
     }
 
+    public static var dictationHistoryURL: URL {
+        fileURL(named: "dictation-history.json")
+    }
+
     public static var privateDirectoryURL: URL {
         baseDirectoryURL
             .appendingPathComponent("private", isDirectory: true)

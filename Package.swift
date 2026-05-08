@@ -16,6 +16,10 @@ let package = Package(
             targets: ["VoiceBarApp"]
         ),
         .executable(
+            name: "VoiceBarDictationBenchmarks",
+            targets: ["VoiceBarDictationBenchmarks"]
+        ),
+        .executable(
             name: "VoiceBarSmokeTests",
             targets: ["VoiceBarSmokeTests"]
         )
@@ -39,7 +43,19 @@ let package = Package(
             ]
         ),
         .executableTarget(
+            name: "VoiceBarDictationBenchmarks",
+            dependencies: ["VoiceBarCore"]
+        ),
+        .executableTarget(
             name: "VoiceBarSmokeTests",
+            dependencies: ["VoiceBarCore"]
+        ),
+        .testTarget(
+            name: "VoiceBarAppTests",
+            dependencies: ["VoiceBarApp"]
+        ),
+        .testTarget(
+            name: "VoiceBarCoreTests",
             dependencies: ["VoiceBarCore"]
         )
     ]

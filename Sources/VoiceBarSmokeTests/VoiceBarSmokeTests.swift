@@ -45,7 +45,8 @@ struct VoiceBarSmokeTests {
             try await assertTTSKitEnginesStartConfiguredForOnDemandLoad()
             try await assertSpeechChunkSupportsJSONRoundTrip()
             try await assertSpeechRequestSupportsVoiceSelectionRoundTrip()
-            try await assertFormatterDefaultsPreferLowLatencyPath()
+            try await assertFormatterDefaultsPreferSmallLocalModel()
+            try await assertFormatterQualityModesControlTimeouts()
             try await assertFormatterEnvironmentOverrideTakesPrecedence()
             try await assertFunctionKeyHoldToTalkSourceCoverage()
             try await assertOperatorCriticalAliasBackfillSourceCoverage()
@@ -68,8 +69,12 @@ struct VoiceBarSmokeTests {
             try await assertDeterministicFormatterHandlesBareNumberedListCommand()
             try await assertDeterministicFormatterLeavesWhitespaceUntouchedWhenNoRulesApply()
             try await assertDeterministicFormatterRecognizesSpokenPunctuationWithTrailingSTTPunctuation()
+            try await assertDeterministicFormatterHandlesExpandedSpokenPunctuation()
             try await assertDeterministicFormatterDoesNotRewriteNaturalProseLineMentions()
             try await assertDeterministicFormatterPreservesStandaloneLineBreakCommands()
+            try await assertFallbackTextPolisherImprovesSentenceAndQuestionOutput()
+            try await assertDictationPipelinePolishesModelPunctuationBeforeInsertion()
+            try await assertDictationPipelineRecoversFromEmptyModelDictationOutput()
             try await assertDictationActionRouterSkipsMixedModeActionsUnlessAllowed()
             try await assertDictationActionRouterReportsMatchedTrigger()
             try await assertSnippetExpansionCannotTriggerActions()
@@ -113,13 +118,40 @@ struct VoiceBarSmokeTests {
         }
     }
 
-    private static func assertFormatterDefaultsPreferLowLatencyPath() async throws {
+    private static func assertFormatterDefaultsPreferSmallLocalModel() async throws {
         guard OllamaFormatterService.defaultModel == "llama3.2:3b" else {
             throw SmokeTestError("Expected low-latency formatter default model to be llama3.2:3b.")
         }
 
         guard OllamaFormatterService.requestTimeoutSeconds == 2 else {
-            throw SmokeTestError("Expected formatter timeout default to be 2 seconds for faster dictation fallbacks.")
+            throw SmokeTestError("Expected legacy formatter timeout constant to stay aligned with Fast mode.")
+        }
+    }
+
+    private static func assertFormatterQualityModesControlTimeouts() async throws {
+        let key = OllamaFormatterService.timeoutOverrideEnvironmentKey
+        let originalValue = ProcessInfo.processInfo.environment[key]
+
+        defer {
+            if let originalValue {
+                setenv(key, originalValue, 1)
+            } else {
+                unsetenv(key)
+            }
+        }
+
+        unsetenv(key)
+
+        guard OllamaFormatterService.requestTimeoutSeconds(for: .fast) == 2 else {
+            throw SmokeTestError("Expected Fast formatter quality to keep the 2-second timeout.")
+        }
+
+        guard OllamaFormatterService.requestTimeoutSeconds(for: .balanced) == 4 else {
+            throw SmokeTestError("Expected Balanced formatter quality to allow a 4-second cleanup window.")
+        }
+
+        guard OllamaFormatterService.requestTimeoutSeconds(for: .quality) == 8 else {
+            throw SmokeTestError("Expected Quality formatter quality to allow an 8-second cleanup window.")
         }
     }
 
@@ -274,7 +306,7 @@ struct VoiceBarSmokeTests {
             Outro paragraph.
             """,
             source: .clipboard,
-            frontmostBundleIdentifier: "com.apple.TextEdit"
+            frontmostBundleIdentifier: "com.example.voicebar.synthetic-host"
         )
 
         let output = await service.normalize(
@@ -2419,6 +2451,21 @@ struct VoiceBarSmokeTests {
         }
     }
 
+    private static func assertDeterministicFormatterHandlesExpandedSpokenPunctuation() async throws {
+        let result = DictationDeterministicFormatter.apply(
+            to: "hello comma world exclamation point"
+        )
+
+        guard result.text == "Hello, world!" else {
+            throw SmokeTestError("Expected expanded spoken punctuation aliases to render as symbols.")
+        }
+
+        let fullStop = DictationDeterministicFormatter.apply(to: "the build passed full stop")
+        guard fullStop.text == "The build passed." else {
+            throw SmokeTestError("Expected British spoken punctuation 'full stop' to render as a period.")
+        }
+    }
+
     private static func assertDeterministicFormatterDoesNotRewriteNaturalProseLineMentions() async throws {
         let prose = "we are launching a new line of products"
         let result = DictationDeterministicFormatter.apply(to: prose)
@@ -2441,6 +2488,94 @@ struct VoiceBarSmokeTests {
         let newParagraph = DictationDeterministicFormatter.apply(to: "new paragraph")
         guard newParagraph.text == "\n\n", newParagraph.shouldBypassModel else {
             throw SmokeTestError("Expected standalone 'new paragraph' to insert paragraph spacing instead of being trimmed to empty text.")
+        }
+    }
+
+    private static func assertFallbackTextPolisherImprovesSentenceAndQuestionOutput() async throws {
+        let statement = DictationFallbackTextPolisher.apply(
+            to: "hello world this is a test",
+            qualityMode: .balanced
+        )
+        guard statement == "Hello world this is a test." else {
+            throw SmokeTestError("Expected formatter fallback polish to capitalize and punctuate statements.")
+        }
+
+        let question = DictationFallbackTextPolisher.apply(
+            to: "can you send me the latest build status",
+            qualityMode: .balanced
+        )
+        guard question == "Can you send me the latest build status?" else {
+            throw SmokeTestError("Expected formatter fallback polish to detect common question forms.")
+        }
+
+        let modelQuestion = DictationFallbackTextPolisher.apply(
+            to: "Can you send me the latest build status.",
+            sourceTranscript: "can you send me the latest build status",
+            qualityMode: .balanced
+        )
+        guard modelQuestion == "Can you send me the latest build status?" else {
+            throw SmokeTestError("Expected formatter fallback polish to correct model output that missed a question mark.")
+        }
+
+        let modelExclamation = DictationFallbackTextPolisher.apply(
+            to: "Hello world!",
+            sourceTranscript: "hello world",
+            qualityMode: .balanced
+        )
+        guard modelExclamation == "Hello world." else {
+            throw SmokeTestError("Expected formatter fallback polish to remove unsupported model exclamation marks.")
+        }
+    }
+
+    private static func assertDictationPipelinePolishesModelPunctuationBeforeInsertion() async throws {
+        let pipeline = DictationPipeline(
+            formatterService: UnderPunctuatingDictationFormatter(),
+            snippetStore: InMemoryDictationSnippetStore(snippets: []),
+            actionStore: InMemoryDictationActionStore(actions: [])
+        )
+
+        let questionResult = try await pipeline.processTranscript(
+            "can you send me the latest build status",
+            formattingMode: .notes,
+            qualityMode: .balanced,
+            formatterModelIdentifier: "llama3.2:3b",
+            frontmostBundleIdentifier: "com.example.voicebar.synthetic-host"
+        )
+
+        guard questionResult.insertionText == "Can you send me the latest build status?" else {
+            throw SmokeTestError("Expected dictation pipeline to repair missing model question punctuation before insertion.")
+        }
+
+        let statementResult = try await pipeline.processTranscript(
+            "hello world",
+            formattingMode: .notes,
+            qualityMode: .balanced,
+            formatterModelIdentifier: "llama3.2:3b",
+            frontmostBundleIdentifier: "com.example.voicebar.synthetic-host"
+        )
+
+        guard statementResult.insertionText == "Hello world." else {
+            throw SmokeTestError("Expected dictation pipeline to remove unsupported model exclamation before insertion.")
+        }
+    }
+
+    private static func assertDictationPipelineRecoversFromEmptyModelDictationOutput() async throws {
+        let pipeline = DictationPipeline(
+            formatterService: EmptyDictationFormatter(),
+            snippetStore: InMemoryDictationSnippetStore(snippets: []),
+            actionStore: InMemoryDictationActionStore(actions: [])
+        )
+
+        let result = try await pipeline.processTranscript(
+            "can you send me the latest build status",
+            formattingMode: .notes,
+            qualityMode: .quality,
+            formatterModelIdentifier: "llama3.2:3b",
+            frontmostBundleIdentifier: "com.apple.TextEdit"
+        )
+
+        guard result.insertionText == "Can you send me the latest build status?" else {
+            throw SmokeTestError("Expected dictation pipeline to recover from empty model output by polishing the source transcript.")
         }
     }
 
@@ -2722,12 +2857,12 @@ struct VoiceBarSmokeTests {
             throw SmokeTestError("Expected the dictation pipeline to preserve the requested formatter model.")
         }
 
-        guard recordedRequests.last?.rollingContext == ["first pass"] else {
+        guard recordedRequests.last?.rollingContext == ["First pass."] else {
             throw SmokeTestError("Expected the dictation pipeline to carry recent insertion context into the next formatter request.")
         }
 
-        guard secondResult.insertionText == "second pass" else {
-            throw SmokeTestError("Expected the dictation pipeline to surface the formatter's insertion text.")
+        guard secondResult.insertionText == "Second pass." else {
+            throw SmokeTestError("Expected the dictation pipeline to surface polished formatter insertion text.")
         }
 
         guard secondResult.formatterPath == .ollama else {
@@ -2836,8 +2971,8 @@ struct VoiceBarSmokeTests {
             frontmostBundleIdentifier: "com.apple.TextEdit"
         )
 
-        guard proseResult.insertionText == "hello Local Notes team" else {
-            throw SmokeTestError("Expected formatter fallback to insert snippet-expanded text when structured cleanup stalls.")
+        guard proseResult.insertionText == "Hello Local Notes team." else {
+            throw SmokeTestError("Expected formatter fallback to insert lightly polished snippet-expanded text when structured cleanup stalls.")
         }
 
         guard proseResult.formatterStatusNote?.contains("Formatter fallback:") == true else {
@@ -2915,8 +3050,8 @@ struct VoiceBarSmokeTests {
         )
 
         // Verify fallback behavior works with timeout-specific diagnostics
-        guard result.insertionText == "hello Procure Ally team" else {
-            throw SmokeTestError("Expected timeout fallback to insert snippet-expanded text.")
+        guard result.insertionText == "Hello Procure Ally team." else {
+            throw SmokeTestError("Expected timeout fallback to insert lightly polished snippet-expanded text.")
         }
 
         guard let statusNote = result.formatterStatusNote else {
@@ -4623,6 +4758,56 @@ private actor DictationFormatterRecorder: DictationFormatterService {
 
     func recordedRequests() -> [DictationFormattingRequest] {
         requests
+    }
+}
+
+private actor UnderPunctuatingDictationFormatter: DictationFormatterService {
+    func availability() async -> DictationServiceAvailability {
+        DictationServiceAvailability(
+            isAvailable: true,
+            reason: "Synthetic formatter returns under-punctuated text."
+        )
+    }
+
+    func format(_ request: DictationFormattingRequest) async throws -> DictationFormatterResponse {
+        let normalizedTranscript = request.transcript
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .lowercased()
+
+        let formattedText = normalizedTranscript.hasPrefix("can you")
+            ? "Can you send me the latest build status."
+            : "Hello world!"
+
+        return DictationFormatterResponse(
+            cleanedText: formattedText,
+            formattedText: formattedText,
+            detectedMode: .dictation,
+            snippetApplications: request.appliedSnippets,
+            actionCandidates: [],
+            shouldInsertText: true,
+            confidence: 0.8
+        )
+    }
+}
+
+private actor EmptyDictationFormatter: DictationFormatterService {
+    func availability() async -> DictationServiceAvailability {
+        DictationServiceAvailability(
+            isAvailable: true,
+            reason: "Synthetic formatter returns empty dictation text."
+        )
+    }
+
+    func format(_ request: DictationFormattingRequest) async throws -> DictationFormatterResponse {
+        DictationFormatterResponse(
+            cleanedText: "",
+            formattedText: "",
+            detectedMode: .dictation,
+            snippetApplications: request.appliedSnippets,
+            actionCandidates: [],
+            shouldInsertText: false,
+            confidence: 0.2
+        )
     }
 }
 

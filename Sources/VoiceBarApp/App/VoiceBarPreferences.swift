@@ -389,9 +389,12 @@ struct VoiceBarPreferences: Codable, Equatable, Sendable {
     var selectedVoiceIdentifier: String
     var formatterModelIdentifier: String
     var dictationFormattingMode: DictationFormattingMode
+    var dictationFormatterQualityMode: DictationFormatterQualityMode
     var insertDictationAtCursor: Bool
     var autoRunTrustedActions: Bool
     var dictationAudioConfirmationEnabled: Bool
+    var saveRecentDictationsForRecovery: Bool
+    var dictationHistoryRetentionLimit: Int
     var copyFallbackEnabled: Bool
     var preloadPremiumEngine: Bool
     var floatingControllerEnabled: Bool
@@ -409,9 +412,12 @@ struct VoiceBarPreferences: Codable, Equatable, Sendable {
         case selectedVoiceIdentifier
         case formatterModelIdentifier
         case dictationFormattingMode
+        case dictationFormatterQualityMode
         case insertDictationAtCursor
         case autoRunTrustedActions
         case dictationAudioConfirmationEnabled
+        case saveRecentDictationsForRecovery
+        case dictationHistoryRetentionLimit
         case copyFallbackEnabled
         case preloadPremiumEngine
         case floatingControllerEnabled
@@ -422,7 +428,10 @@ struct VoiceBarPreferences: Codable, Equatable, Sendable {
         case holdToTalkShortcut
     }
 
-    private static let currentSchemaVersion = 7
+    private static let currentSchemaVersion = 9
+    static let minimumDictationHistoryRetentionLimit = 1
+    static let defaultDictationHistoryRetentionLimit = 50
+    static let maximumDictationHistoryRetentionLimit = 200
 
     init(
         selectedMode: SpeechMode,
@@ -431,9 +440,12 @@ struct VoiceBarPreferences: Codable, Equatable, Sendable {
         selectedVoiceIdentifier: String,
         formatterModelIdentifier: String,
         dictationFormattingMode: DictationFormattingMode,
+        dictationFormatterQualityMode: DictationFormatterQualityMode,
         insertDictationAtCursor: Bool,
         autoRunTrustedActions: Bool,
         dictationAudioConfirmationEnabled: Bool,
+        saveRecentDictationsForRecovery: Bool,
+        dictationHistoryRetentionLimit: Int,
         copyFallbackEnabled: Bool,
         preloadPremiumEngine: Bool,
         floatingControllerEnabled: Bool,
@@ -449,9 +461,14 @@ struct VoiceBarPreferences: Codable, Equatable, Sendable {
         self.selectedVoiceIdentifier = selectedVoiceIdentifier
         self.formatterModelIdentifier = formatterModelIdentifier
         self.dictationFormattingMode = dictationFormattingMode
+        self.dictationFormatterQualityMode = dictationFormatterQualityMode
         self.insertDictationAtCursor = insertDictationAtCursor
         self.autoRunTrustedActions = autoRunTrustedActions
         self.dictationAudioConfirmationEnabled = dictationAudioConfirmationEnabled
+        self.saveRecentDictationsForRecovery = saveRecentDictationsForRecovery
+        self.dictationHistoryRetentionLimit = Self.sanitizedDictationHistoryRetentionLimit(
+            dictationHistoryRetentionLimit
+        )
         self.copyFallbackEnabled = copyFallbackEnabled
         self.preloadPremiumEngine = preloadPremiumEngine
         self.floatingControllerEnabled = floatingControllerEnabled
@@ -470,9 +487,12 @@ struct VoiceBarPreferences: Codable, Equatable, Sendable {
             selectedVoiceIdentifier: SpeechVoiceCatalog.defaultVoiceIdentifier,
             formatterModelIdentifier: OllamaFormatterService.defaultModel,
             dictationFormattingMode: .automatic,
+            dictationFormatterQualityMode: .balanced,
             insertDictationAtCursor: true,
             autoRunTrustedActions: false,
             dictationAudioConfirmationEnabled: false,
+            saveRecentDictationsForRecovery: true,
+            dictationHistoryRetentionLimit: Self.defaultDictationHistoryRetentionLimit,
             copyFallbackEnabled: false,
             preloadPremiumEngine: false,
             floatingControllerEnabled: true,
@@ -509,9 +529,14 @@ struct VoiceBarPreferences: Codable, Equatable, Sendable {
         selectedVoiceIdentifier = (try? container.decode(String.self, forKey: .selectedVoiceIdentifier)) ?? defaults.selectedVoiceIdentifier
         formatterModelIdentifier = (try? container.decode(String.self, forKey: .formatterModelIdentifier)) ?? defaults.formatterModelIdentifier
         dictationFormattingMode = (try? container.decode(DictationFormattingMode.self, forKey: .dictationFormattingMode)) ?? defaults.dictationFormattingMode
+        dictationFormatterQualityMode = (try? container.decode(DictationFormatterQualityMode.self, forKey: .dictationFormatterQualityMode)) ?? defaults.dictationFormatterQualityMode
         insertDictationAtCursor = (try? container.decode(Bool.self, forKey: .insertDictationAtCursor)) ?? defaults.insertDictationAtCursor
         autoRunTrustedActions = (try? container.decode(Bool.self, forKey: .autoRunTrustedActions)) ?? defaults.autoRunTrustedActions
         dictationAudioConfirmationEnabled = (try? container.decode(Bool.self, forKey: .dictationAudioConfirmationEnabled)) ?? defaults.dictationAudioConfirmationEnabled
+        saveRecentDictationsForRecovery = (try? container.decode(Bool.self, forKey: .saveRecentDictationsForRecovery)) ?? defaults.saveRecentDictationsForRecovery
+        dictationHistoryRetentionLimit = Self.sanitizedDictationHistoryRetentionLimit(
+            (try? container.decode(Int.self, forKey: .dictationHistoryRetentionLimit)) ?? defaults.dictationHistoryRetentionLimit
+        )
         copyFallbackEnabled = (try? container.decode(Bool.self, forKey: .copyFallbackEnabled)) ?? defaults.copyFallbackEnabled
         preloadPremiumEngine = (try? container.decode(Bool.self, forKey: .preloadPremiumEngine)) ?? defaults.preloadPremiumEngine
         floatingControllerEnabled = (try? container.decode(Bool.self, forKey: .floatingControllerEnabled)) ?? defaults.floatingControllerEnabled
@@ -583,9 +608,15 @@ struct VoiceBarPreferences: Codable, Equatable, Sendable {
         try container.encode(selectedVoiceIdentifier, forKey: .selectedVoiceIdentifier)
         try container.encode(formatterModelIdentifier, forKey: .formatterModelIdentifier)
         try container.encode(dictationFormattingMode, forKey: .dictationFormattingMode)
+        try container.encode(dictationFormatterQualityMode, forKey: .dictationFormatterQualityMode)
         try container.encode(insertDictationAtCursor, forKey: .insertDictationAtCursor)
         try container.encode(autoRunTrustedActions, forKey: .autoRunTrustedActions)
         try container.encode(dictationAudioConfirmationEnabled, forKey: .dictationAudioConfirmationEnabled)
+        try container.encode(saveRecentDictationsForRecovery, forKey: .saveRecentDictationsForRecovery)
+        try container.encode(
+            Self.sanitizedDictationHistoryRetentionLimit(dictationHistoryRetentionLimit),
+            forKey: .dictationHistoryRetentionLimit
+        )
         try container.encode(copyFallbackEnabled, forKey: .copyFallbackEnabled)
         try container.encode(preloadPremiumEngine, forKey: .preloadPremiumEngine)
         try container.encode(floatingControllerEnabled, forKey: .floatingControllerEnabled)
@@ -620,6 +651,13 @@ struct VoiceBarPreferences: Codable, Equatable, Sendable {
 
     static func sanitizedHoldToTalkShortcut(_ shortcut: HotkeyShortcut) -> HotkeyShortcut {
         isValidHoldToTalkShortcut(shortcut) ? shortcut : defaultHoldToTalkShortcut
+    }
+
+    static func sanitizedDictationHistoryRetentionLimit(_ limit: Int) -> Int {
+        min(
+            maximumDictationHistoryRetentionLimit,
+            max(minimumDictationHistoryRetentionLimit, limit)
+        )
     }
 
     static func shortcutsConflict(

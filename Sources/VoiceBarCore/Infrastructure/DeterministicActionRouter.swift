@@ -130,11 +130,22 @@ public enum DictationDeterministicFormatter {
     ]
 
     private static let spokenPunctuationMap: [(spoken: String, symbol: String)] = [
+        ("exclamation point", "!"),
+        ("exclamation mark", "!"),
+        ("question mark", "?"),
+        ("semi colon", ";"),
+        ("semicolon", ";"),
+        ("full stop", "."),
+        ("open parenthesis", "("),
+        ("close parenthesis", ")"),
+        ("open bracket", "["),
+        ("close bracket", "]"),
         ("comma", ","),
         ("colon", ":"),
         ("period", "."),
-        ("question mark", "?"),
-        ("exclamation mark", "!")
+        ("dash", "-"),
+        ("hyphen", "-"),
+        ("slash", "/")
     ]
 
     private static let trailingSpokenBoundaryPunctuation = CharacterSet(
@@ -464,7 +475,195 @@ public enum DictationDeterministicFormatter {
             .replacingOccurrences(of: " *\\n *", with: "\n", options: .regularExpression)
             .replacingOccurrences(of: "\\n{3,}", with: "\n\n", options: .regularExpression)
 
-        return lineNormalized.trimmingCharacters(in: .whitespaces)
+        let punctuationNormalized = lineNormalized.trimmingCharacters(in: .whitespaces)
+            .replacingOccurrences(of: " +([,.;:!?])", with: "$1", options: .regularExpression)
+            .replacingOccurrences(of: "([\\(\\[\\\"]) +", with: "$1", options: .regularExpression)
+            .replacingOccurrences(of: " +([\\)\\]\\\"])", with: "$1", options: .regularExpression)
+
+        guard punctuationNormalized.contains("\n") == false,
+              punctuationNormalized.hasPrefix("- ") == false,
+              punctuationNormalized.range(of: "^\\d+\\. ", options: .regularExpression) == nil
+        else {
+            return punctuationNormalized
+        }
+
+        return capitalizeFirstLetter(in: punctuationNormalized)
+    }
+
+    private static func capitalizeFirstLetter(in text: String) -> String {
+        var result = ""
+        var didCapitalize = false
+
+        for character in text {
+            if didCapitalize == false, character.isLetter {
+                result.append(contentsOf: character.uppercased())
+                didCapitalize = true
+            } else {
+                result.append(character)
+            }
+        }
+
+        return result
+    }
+}
+
+public enum DictationFallbackTextPolisher {
+    public static func apply(
+        to text: String,
+        sourceTranscript: String? = nil,
+        qualityMode: DictationFormatterQualityMode
+    ) -> String {
+        let deterministic = DictationDeterministicFormatter.apply(to: text)
+        if deterministic.didApplyFormatting {
+            return deterministic.text
+        }
+
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty == false else {
+            return text
+        }
+
+        if trimmed.contains("\n") {
+            return trimmed
+        }
+
+        var workingText = normalizedHorizontalWhitespace(trimmed)
+        workingText = capitalizeSentenceStarts(in: workingText)
+        workingText = normalizeExclamationMarks(in: workingText, sourceTranscript: sourceTranscript)
+
+        if isQuestion(sourceTranscript ?? workingText) {
+            workingText = replaceTerminalPunctuation(in: workingText, with: "?")
+        } else if hasTerminalPunctuation(workingText) == false {
+            workingText += "."
+        }
+
+        switch qualityMode {
+        case .fast:
+            return workingText
+        case .balanced, .quality:
+            return removeSpaceBeforePunctuation(in: workingText)
+        }
+    }
+
+    private static func normalizedHorizontalWhitespace(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "[\\t ]+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func capitalizeSentenceStarts(in text: String) -> String {
+        var result = ""
+        var shouldCapitalizeNextLetter = true
+
+        for character in text {
+            if shouldCapitalizeNextLetter, character.isLetter {
+                result.append(contentsOf: character.uppercased())
+                shouldCapitalizeNextLetter = false
+                continue
+            }
+
+            result.append(character)
+
+            if ".!?".contains(character) {
+                shouldCapitalizeNextLetter = true
+            } else if character.isLetter || character.isNumber {
+                shouldCapitalizeNextLetter = false
+            }
+        }
+
+        return result
+    }
+
+    private static func hasTerminalPunctuation(_ text: String) -> Bool {
+        guard let lastCharacter = text.trimmingCharacters(in: .whitespacesAndNewlines).last else {
+            return false
+        }
+
+        return ".!?".contains(lastCharacter)
+    }
+
+    private static func isQuestion(_ text: String) -> Bool {
+        let normalized = text
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let questionPrefixes = [
+            "can you",
+            "could you",
+            "would you",
+            "should i",
+            "should we",
+            "do you",
+            "does",
+            "did",
+            "is",
+            "are",
+            "am i",
+            "what",
+            "where",
+            "when",
+            "why",
+            "how",
+            "who",
+            "which"
+        ]
+
+        return questionPrefixes.contains { prefix in
+            normalized == prefix || normalized.hasPrefix("\(prefix) ")
+        }
+    }
+
+    private static func removeSpaceBeforePunctuation(in text: String) -> String {
+        text.replacingOccurrences(
+            of: " +([,.;:!?])",
+            with: "$1",
+            options: .regularExpression
+        )
+    }
+
+    private static func normalizeExclamationMarks(
+        in text: String,
+        sourceTranscript: String?
+    ) -> String {
+        guard text.contains("!") else {
+            return text
+        }
+
+        guard sourceAllowsExclamation(sourceTranscript) == false else {
+            return text
+        }
+
+        return text.replacingOccurrences(of: "!", with: ".")
+    }
+
+    private static func sourceAllowsExclamation(_ sourceTranscript: String?) -> Bool {
+        guard let sourceTranscript else {
+            return true
+        }
+
+        let normalized = sourceTranscript
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .lowercased()
+
+        return normalized.contains("exclamation point")
+            || normalized.contains("exclamation mark")
+            || normalized.contains("urgent")
+            || normalized.contains("urgently")
+            || normalized.contains("important")
+    }
+
+    private static func replaceTerminalPunctuation(in text: String, with punctuation: Character) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let lastCharacter = trimmed.last else {
+            return text
+        }
+
+        if ".!?".contains(lastCharacter) {
+            return String(trimmed.dropLast()) + String(punctuation)
+        }
+
+        return trimmed + String(punctuation)
     }
 }
 
@@ -544,6 +743,7 @@ public actor DictationPipeline {
     public func processTranscript(
         _ transcript: String,
         formattingMode: DictationFormattingMode,
+        qualityMode: DictationFormatterQualityMode = .balanced,
         formatterModelIdentifier: String,
         frontmostBundleIdentifier: String?
     ) async throws -> DictationPipelineResult {
@@ -567,6 +767,7 @@ public actor DictationPipeline {
         let formattingRequest = DictationFormattingRequest(
             transcript: deterministicResult.text,
             formattingMode: formattingMode,
+            qualityMode: qualityMode,
             formatterModelIdentifier: resolvedFormatterModel,
             frontmostBundleIdentifier: frontmostBundleIdentifier,
             rollingContext: rollingContext,
@@ -593,7 +794,11 @@ public actor DictationPipeline {
         } else {
             let formatterStartedAt = DispatchTime.now().uptimeNanoseconds
             do {
-                formatterResponse = try await formatterService.format(formattingRequest)
+                formatterResponse = Self.polishModelFormatterResponse(
+                    try await formatterService.format(formattingRequest),
+                    sourceTranscript: transcript,
+                    qualityMode: qualityMode
+                )
                 formatterStatusNote = nil
                 formatterPath = .ollama
                 formatterUsedFallback = false
@@ -605,6 +810,7 @@ public actor DictationPipeline {
                 formatterResponse = Self.makeFormatterFallbackResponse(
                     transcript: deterministicResult.text,
                     rawTranscript: transcript,
+                    qualityMode: qualityMode,
                     snippetApplications: snippetExpansion.applications,
                     actions: actions
                 )
@@ -671,6 +877,7 @@ public actor DictationPipeline {
     private static func makeFormatterFallbackResponse(
         transcript: String,
         rawTranscript: String,
+        qualityMode: DictationFormatterQualityMode,
         snippetApplications: [DictationSnippetApplication],
         actions: [DictationActionDefinition]
     ) -> DictationFormatterResponse {
@@ -681,11 +888,19 @@ public actor DictationPipeline {
                 action.triggers
                     .map(DictationActionRouter.normalize)
                     .contains(normalizedTranscript)
-            }
+        }
+
+        let polishedTranscript = hasExactActionMatch
+            ? transcript
+            : DictationFallbackTextPolisher.apply(
+                to: transcript,
+                sourceTranscript: rawTranscript,
+                qualityMode: qualityMode
+            )
 
         return DictationFormatterResponse(
-            cleanedText: transcript,
-            formattedText: hasExactActionMatch ? "" : transcript,
+            cleanedText: polishedTranscript,
+            formattedText: hasExactActionMatch ? "" : polishedTranscript,
             detectedMode: hasExactActionMatch ? .command : .dictation,
             snippetApplications: snippetApplications,
             actionCandidates: [],
@@ -717,6 +932,65 @@ public actor DictationPipeline {
             actionCandidates: [],
             shouldInsertText: hasExactActionMatch == false,
             confidence: nil
+        )
+    }
+
+    private static func polishModelFormatterResponse(
+        _ response: DictationFormatterResponse,
+        sourceTranscript: String,
+        qualityMode: DictationFormatterQualityMode
+    ) -> DictationFormatterResponse {
+        // Shape: model-proposed command labels are not action authority. If the
+        // model still returns insertable text, keep polishing that text so
+        // punctuation repair is not skipped for normal dictation questions.
+        let shouldPreserveCommandOnlyResponse = response.detectedMode == .command
+            && response.shouldInsertText == false
+        guard shouldPreserveCommandOnlyResponse == false else {
+            return response
+        }
+
+        let formattedText = response.formattedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isExactSnippetExpansion = response.snippetApplications.contains { application in
+            application.expansion.trimmingCharacters(in: .whitespacesAndNewlines) == formattedText
+        }
+
+        if isExactSnippetExpansion {
+            return DictationFormatterResponse(
+                cleanedText: response.cleanedText,
+                formattedText: response.formattedText,
+                detectedMode: response.detectedMode,
+                snippetApplications: response.snippetApplications,
+                actionCandidates: response.actionCandidates,
+                shouldInsertText: true,
+                confidence: response.confidence
+            )
+        }
+
+        let cleanedText = response.cleanedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let candidateFormattedText = formattedText.isEmpty
+            ? (cleanedText.isEmpty ? sourceTranscript : cleanedText)
+            : formattedText
+        let polishedFormattedText = DictationFallbackTextPolisher.apply(
+            to: candidateFormattedText,
+            sourceTranscript: sourceTranscript,
+            qualityMode: qualityMode
+        )
+        let polishedCleanedText = cleanedText.isEmpty
+            ? polishedFormattedText
+            : DictationFallbackTextPolisher.apply(
+                to: cleanedText,
+                sourceTranscript: sourceTranscript,
+                qualityMode: qualityMode
+            )
+
+        return DictationFormatterResponse(
+            cleanedText: polishedCleanedText,
+            formattedText: polishedFormattedText,
+            detectedMode: response.detectedMode,
+            snippetApplications: response.snippetApplications,
+            actionCandidates: response.actionCandidates,
+            shouldInsertText: polishedFormattedText.isEmpty == false,
+            confidence: response.confidence
         )
     }
 

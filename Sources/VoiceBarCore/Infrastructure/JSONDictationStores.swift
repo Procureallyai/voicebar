@@ -251,3 +251,116 @@ public actor JSONDictationActionRegistryStore: DictationActionRegistryStore {
         ]
     }
 }
+
+public actor JSONDictationHistoryStore: DictationHistoryStore {
+    private let storageURL: URL
+
+    public init(storageURL: URL = VoiceBarStorageLocation.dictationHistoryURL) {
+        self.storageURL = storageURL
+    }
+
+    public func loadEntries() async throws -> [DictationHistoryEntry] {
+        try loadCurrentEntries()
+    }
+
+    public func saveEntry(
+        _ entry: DictationHistoryEntry,
+        retentionLimit: Int
+    ) async throws -> [DictationHistoryEntry] {
+        let retainedLimit = Self.sanitizedRetentionLimit(retentionLimit)
+        let currentEntries = try loadCurrentEntries()
+            .filter { $0.id != entry.id }
+        let nextEntries = Self.prunedEntries(
+            [entry] + currentEntries,
+            retentionLimit: retainedLimit
+        )
+        try persist(nextEntries)
+        return nextEntries
+    }
+
+    public func updateInsertionSummary(
+        entryID: String,
+        insertionSummary: String,
+        retentionLimit: Int
+    ) async throws -> [DictationHistoryEntry] {
+        let retainedLimit = Self.sanitizedRetentionLimit(retentionLimit)
+        let nextEntries = try loadCurrentEntries().map { entry in
+            guard entry.id == entryID else {
+                return entry
+            }
+
+            var updatedEntry = entry
+            updatedEntry.insertionSummary = insertionSummary
+            return updatedEntry
+        }
+        let prunedEntries = Self.prunedEntries(
+            nextEntries,
+            retentionLimit: retainedLimit
+        )
+        try persist(prunedEntries)
+        return prunedEntries
+    }
+
+    public func trimEntries(retentionLimit: Int) async throws -> [DictationHistoryEntry] {
+        let retainedLimit = Self.sanitizedRetentionLimit(retentionLimit)
+        let prunedEntries = Self.prunedEntries(
+            try loadCurrentEntries(),
+            retentionLimit: retainedLimit
+        )
+        try persist(prunedEntries)
+        return prunedEntries
+    }
+
+    public func clearEntries() async throws {
+        try persist([])
+    }
+
+    private func loadCurrentEntries() throws -> [DictationHistoryEntry] {
+        guard FileManager.default.fileExists(atPath: storageURL.path) else {
+            return []
+        }
+
+        let data = try Data(contentsOf: storageURL)
+        return try Self.decoder.decode([DictationHistoryEntry].self, from: data)
+            .sorted { lhs, rhs in
+                lhs.createdAt > rhs.createdAt
+            }
+    }
+
+    private func persist(_ entries: [DictationHistoryEntry]) throws {
+        try VoiceBarStorageLocation.ensureDirectoryExists(for: storageURL)
+
+        let data = try Self.encoder.encode(entries)
+        try data.write(to: storageURL, options: .atomic)
+    }
+
+    private static func prunedEntries(
+        _ entries: [DictationHistoryEntry],
+        retentionLimit: Int
+    ) -> [DictationHistoryEntry] {
+        Array(
+            entries
+                .sorted { lhs, rhs in
+                    lhs.createdAt > rhs.createdAt
+                }
+                .prefix(sanitizedRetentionLimit(retentionLimit))
+        )
+    }
+
+    private static func sanitizedRetentionLimit(_ retentionLimit: Int) -> Int {
+        min(200, max(1, retentionLimit))
+    }
+
+    private static var encoder: JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return encoder
+    }
+
+    private static var decoder: JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }
+}

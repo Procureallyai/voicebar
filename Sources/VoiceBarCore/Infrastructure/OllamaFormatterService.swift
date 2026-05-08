@@ -3,10 +3,11 @@ import Foundation
 public struct OllamaFormatterService: DictationFormatterService {
     public static let modelOverrideEnvironmentKey = "VOICEBAR_OLLAMA_FORMATTER_MODEL"
     public static let hostOverrideEnvironmentKey = "VOICEBAR_OLLAMA_HOST"
+    public static let timeoutOverrideEnvironmentKey = "VOICEBAR_OLLAMA_FORMATTER_TIMEOUT_SECONDS"
     public static let defaultModel = "llama3.2:3b"
     public static let requestTimeoutSeconds: TimeInterval = 2
 
-    private static let warmUpTimeoutSeconds: TimeInterval = 2
+    private static let warmUpTimeoutSeconds: TimeInterval = 20
 
     private let session: URLSession
 
@@ -119,6 +120,7 @@ public struct OllamaFormatterService: DictationFormatterService {
 
         // Capture the resolved model early for use in diagnostics (e.g., timeout messages)
         let model = resolvedModelIdentifier(for: request.formatterModelIdentifier)
+        let requestTimeoutSeconds = Self.requestTimeoutSeconds(for: request.qualityMode)
 
         let payload: [String: Any] = [
             "model": model,
@@ -145,7 +147,7 @@ public struct OllamaFormatterService: DictationFormatterService {
         // Dictation has to stay responsive on the operator Mac, so formatter
         // attempts bail out quickly and let the pipeline fall back to direct
         // snippet-expanded insertion when structured cleanup is too slow.
-        urlRequest.timeoutInterval = Self.requestTimeoutSeconds
+        urlRequest.timeoutInterval = requestTimeoutSeconds
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.httpBody = body
 
@@ -156,7 +158,7 @@ public struct OllamaFormatterService: DictationFormatterService {
             (responseData, response) = try await session.data(for: urlRequest)
         } catch let error as URLError where error.code == .timedOut {
             throw DictationRuntimeError.formattingFailed(
-                "Ollama formatter timed out after \(Self.requestTimeoutSeconds)s using \(model). VoiceBar inserted deterministic output without LLM cleanup."
+                "Ollama formatter timed out after \(formatSeconds(requestTimeoutSeconds))s using \(model) in \(request.qualityMode.rawValue) mode. VoiceBar inserted deterministic output without LLM cleanup."
             )
         } catch {
             throw DictationRuntimeError.formattingFailed(
@@ -202,6 +204,18 @@ public struct OllamaFormatterService: DictationFormatterService {
         }
     }
 
+    public static func requestTimeoutSeconds(for qualityMode: DictationFormatterQualityMode) -> TimeInterval {
+        let timeoutOverride = ProcessInfo.processInfo.environment[Self.timeoutOverrideEnvironmentKey]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let overriddenTimeout = timeoutOverride.flatMap { TimeInterval($0) }
+
+        if let overriddenTimeout, overriddenTimeout > 0 {
+            return overriddenTimeout
+        }
+
+        return qualityMode.timeoutSeconds
+    }
+
     private func apiBaseURL() -> URL {
         let host = ProcessInfo.processInfo.environment[Self.hostOverrideEnvironmentKey]
             ?? "http://127.0.0.1:11434/api"
@@ -219,6 +233,15 @@ public struct OllamaFormatterService: DictationFormatterService {
         """
     }
 
+    private func formatSeconds(_ seconds: TimeInterval) -> String {
+        let rounded = seconds.rounded()
+        if rounded == seconds {
+            return "\(Int(rounded))"
+        }
+
+        return String(format: "%.1f", seconds)
+    }
+
     private static let voiceBarFormatterMetaPrompt = """
     You are VoiceBar's local dictation formatter and conservative action classifier.
 
@@ -229,12 +252,27 @@ public struct OllamaFormatterService: DictationFormatterService {
     - Keep output concise and insertion-ready.
 
     Formatting behavior:
+    - Treat transcript text as spoken dictation that needs written-form cleanup.
     - Honor explicit formatting instructions from the transcript.
+    - Use sentence case for normal sentences. Do not title-case normal dictation.
+    - Always restore obvious capitalization, sentence boundaries, terminal punctuation, and question marks.
+    - Use exclamation marks only when the transcript explicitly says "exclamation point", explicitly says "exclamation mark", or clearly carries urgency.
     - Remove filler words only when meaning is unchanged.
     - Keep already-expanded snippets intact; do not "improve" or rewrite snippet expansions.
-    - Apply punctuation, headings, paragraphs, and list formatting only when clearly requested.
-    - For explicit list commands, render plain-text or markdown-style lists.
-    - For explicit email requests, shape output as an email (subject/body/signoff only when requested).
+    - Apply headings, paragraphs, and list formatting only when clearly requested.
+    - For explicit list commands, render plain-text or markdown-style lists with one item per line.
+    - For explicit email requests, shape output as an email while avoiding invented recipients, subjects, or signoffs.
+    - For Notes mode, prefer concise readable notes with light paragraphing instead of a single run-on sentence.
+    - For Bullet List mode, prefer bullet items when the transcript contains multiple distinct items.
+
+    Quality mode behavior:
+    - Fast: make minimal safe cleanup and avoid heavy rewriting.
+    - Balanced: improve punctuation, capitalization, sentence boundaries, and light structure.
+    - Quality: polish the writing more thoroughly while preserving all meaning and technical terms.
+
+    Examples:
+    - Transcript: "hello world this is a test" -> formattedText: "Hello world this is a test."
+    - Transcript: "can you send me the latest build status" -> formattedText: "Can you send me the latest build status?"
 
     Mode behavior:
     - detectedMode=dictation for normal insertion text.
