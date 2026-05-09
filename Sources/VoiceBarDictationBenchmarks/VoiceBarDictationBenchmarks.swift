@@ -6,7 +6,9 @@ struct VoiceBarDictationBenchmarks {
     struct Case {
         var id: String
         var transcript: String
-        var expected: String
+        var expected: String?
+        var requiredFragments: [String]
+        var requiredFormatterPath: DictationFormatterPath?
         var formattingMode: DictationFormattingMode
         var qualityMode: DictationFormatterQualityMode
     }
@@ -19,11 +21,13 @@ struct VoiceBarDictationBenchmarks {
             : BenchmarkFailingFormatter()
         let runnerLabel = useLiveOllama ? "live Ollama when available" : "deterministic plus fallback"
 
-        let cases = [
+        var cases = [
             Case(
                 id: "statement",
                 transcript: "hello world this is a test",
                 expected: "Hello world this is a test.",
+                requiredFragments: [],
+                requiredFormatterPath: nil,
                 formattingMode: .notes,
                 qualityMode: requestedQualityMode
             ),
@@ -31,6 +35,8 @@ struct VoiceBarDictationBenchmarks {
                 id: "question",
                 transcript: "can you send me the latest build status",
                 expected: "Can you send me the latest build status?",
+                requiredFragments: [],
+                requiredFormatterPath: nil,
                 formattingMode: .notes,
                 qualityMode: requestedQualityMode
             ),
@@ -38,6 +44,8 @@ struct VoiceBarDictationBenchmarks {
                 id: "spoken_punctuation",
                 transcript: "hello comma world exclamation point",
                 expected: "Hello, world!",
+                requiredFragments: [],
+                requiredFormatterPath: nil,
                 formattingMode: .automatic,
                 qualityMode: requestedQualityMode
             ),
@@ -45,6 +53,8 @@ struct VoiceBarDictationBenchmarks {
                 id: "numbered_list",
                 transcript: "make this a numbered list one apples two oranges three pears",
                 expected: "1. apples\n2. oranges\n3. pears",
+                requiredFragments: [],
+                requiredFormatterPath: nil,
                 formattingMode: .notes,
                 qualityMode: requestedQualityMode
             ),
@@ -52,6 +62,8 @@ struct VoiceBarDictationBenchmarks {
                 id: "bullet_list",
                 transcript: "write this as a bullet list apples oranges pears",
                 expected: "- apples\n- oranges\n- pears",
+                requiredFragments: [],
+                requiredFormatterPath: nil,
                 formattingMode: .bulletList,
                 qualityMode: requestedQualityMode
             ),
@@ -59,10 +71,32 @@ struct VoiceBarDictationBenchmarks {
                 id: "email",
                 transcript: "format this as an email to the team saying the report is ready",
                 expected: "To: the team\n\nThe report is ready.",
+                requiredFragments: [],
+                requiredFormatterPath: nil,
                 formattingMode: .email,
                 qualityMode: requestedQualityMode
             )
         ]
+
+        if useLiveOllama {
+            cases.append(
+                Case(
+                    id: "normal_use_long",
+                    transcript: "this is a normal use formatter reliability benchmark i want to check whether voicebar keeps the punctuation capitalization and question marks stable when the dictation is longer than a short sentence can you make this read like a clear update for the user",
+                    expected: nil,
+                    requiredFragments: [
+                        "VoiceBar",
+                        "punctuation",
+                        "capitalization",
+                        "question marks",
+                        "clear update"
+                    ],
+                    requiredFormatterPath: .ollama,
+                    formattingMode: .notes,
+                    qualityMode: requestedQualityMode
+                )
+            )
+        }
 
         print("VoiceBar dictation formatting benchmark")
         print("Runner: \(runnerLabel)")
@@ -111,7 +145,7 @@ struct VoiceBarDictationBenchmarks {
             let latency = Int((DispatchTime.now().uptimeNanoseconds - startedAt) / 1_000_000)
             totalLatency += latency
 
-            let didPass = normalize(result.insertionText) == normalize(benchmarkCase.expected)
+            let didPass = didBenchmarkResultPass(result, benchmarkCase: benchmarkCase)
             if didPass {
                 passed += 1
             }
@@ -119,7 +153,15 @@ struct VoiceBarDictationBenchmarks {
             print("\(benchmarkCase.id)\t\(result.formatterPath.rawValue)\t\(latency)\t\(didPass)")
 
             if didPass == false {
-                print("  expected: \(benchmarkCase.expected.replacingOccurrences(of: "\n", with: "\\n"))")
+                if let expected = benchmarkCase.expected {
+                    print("  expected: \(expected.replacingOccurrences(of: "\n", with: "\\n"))")
+                }
+                if let requiredFormatterPath = benchmarkCase.requiredFormatterPath {
+                    print("  required_path: \(requiredFormatterPath.rawValue)")
+                }
+                if benchmarkCase.requiredFragments.isEmpty == false {
+                    print("  required_fragments: \(benchmarkCase.requiredFragments.joined(separator: ", "))")
+                }
                 print("  actual:   \(result.insertionText.replacingOccurrences(of: "\n", with: "\\n"))")
             }
         }
@@ -138,6 +180,25 @@ struct VoiceBarDictationBenchmarks {
         value
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func didBenchmarkResultPass(
+        _ result: DictationPipelineResult,
+        benchmarkCase: Case
+    ) -> Bool {
+        if let expected = benchmarkCase.expected, normalize(result.insertionText) != normalize(expected) {
+            return false
+        }
+
+        if let requiredFormatterPath = benchmarkCase.requiredFormatterPath,
+           result.formatterPath != requiredFormatterPath {
+            return false
+        }
+
+        let normalizedInsertionText = normalize(result.insertionText).lowercased()
+        return benchmarkCase.requiredFragments.allSatisfy { fragment in
+            normalizedInsertionText.contains(fragment.lowercased())
+        }
     }
 
     private static func qualityModeFromArguments() -> DictationFormatterQualityMode? {
