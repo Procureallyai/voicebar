@@ -54,6 +54,7 @@ ALLOWLIST_PATHS=(
     "ROADMAP.md"
     "SECURITY.md"
     "Sources"
+    "Tests"
     "THIRD_PARTY_NOTICES.md"
     "docs/open-source"
     "docs/product"

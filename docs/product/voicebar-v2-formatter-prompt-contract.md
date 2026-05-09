@@ -11,7 +11,13 @@ This document defines the deterministic formatter/router contract for the local 
 - optional high-quality/manual fallback: `gpt-oss:20b`
 - temperature: low / deterministic
 - output mode: structured JSON matching the schema below
-- if the formatter does not answer promptly on the operator Mac, VoiceBar falls back to snippet-expanded insertion and exact allowlisted action matching rather than blocking dictation
+- background warm-up allows up to 20 seconds for local cold model load, then keeps the model warm for the interactive formatter path
+- formatter quality modes:
+  - Fast: 2-second timeout for preserving the lowest-latency dictation path
+  - Balanced: 4-second timeout and the default full formatter path
+  - Quality: 8-second timeout
+- if the formatter does not answer promptly on the operator Mac, VoiceBar falls back to lightly polished deterministic insertion and exact allowlisted action matching rather than blocking dictation
+- successful model responses still pass through a final local punctuation polish before insertion, so missing question marks or unsupported exclamation marks do not leak into the writing path
 
 ## Formatter Intent
 
@@ -20,7 +26,10 @@ The formatter should:
 - preserve meaning
 - remove obvious filler only when safe
 - restore punctuation and sentence boundaries
+- detect common question forms and use question marks
+- restore capitalization and true sentence starts
 - choose light formatting that matches the requested mode
+- create bullet lists, numbered lists, line breaks, paragraphs, and email shape when the transcript clearly requests them
 - keep action candidates conservative
 - avoid inventing shell commands, facts, or structure the user did not imply
 
@@ -30,6 +39,7 @@ The request payload should include:
 
 - raw transcript text
 - requested formatting mode
+- requested formatter quality mode
 - currently configured formatter model identifier
 - rolling context summary when available
 - known snippets
@@ -102,5 +112,8 @@ The request payload should include:
 - test deterministic snippet expansion alignment
 - test action routing split between model suggestion and deterministic registry
 - benchmark cold start and warm latency on the target machine
+- run `bash scripts/benchmark-dictation-formatting.sh deterministic balanced` to verify deterministic and fallback writing quality without requiring live Ollama
+- run `bash scripts/benchmark-dictation-formatting.sh live-ollama balanced` and `bash scripts/benchmark-dictation-formatting.sh live-ollama quality` when Ollama is running locally to compare quality-mode latency
+- live benchmark mode performs a formatter warm-up before timing the cases, because the local `llama3.2:3b` cold load can exceed the interactive formatter timeout
 - keep the current Prompt 017 benchmark truth explicit: raw Ollama generation responded locally, while schema-based formatter requests timed out for `gpt-oss:20b`, `mistral-small3.1`, and `llama3.2:3b`
 - keep any unresolved operator-fit questions labeled `Unverified`

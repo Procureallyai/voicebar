@@ -413,9 +413,26 @@ struct SettingsRootView: View {
                     .pickerStyle(.segmented)
                     .frame(maxWidth: 340)
                     }
+
+                    HStack(spacing: 10) {
+                        Text("Quality")
+                            .foregroundStyle(.secondary)
+                            .frame(width: 52, alignment: .leading)
+
+                    Picker("Quality", selection: Binding(
+                        get: { appState.preferences.dictationFormatterQualityMode },
+                        set: { appState.setDictationFormatterQualityMode($0) }
+                    )) {
+                        ForEach(DictationFormatterQualityMode.allCases, id: \.self) { qualityMode in
+                            Text(qualityMode.rawValue).tag(qualityMode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 340)
+                    }
                 }
 
-                Text("Dictation is formatted using Ollama. If formatting stalls, VoiceBar falls back immediately to deterministic snippet-expanded insertion.")
+                Text("Dictation is formatted using Ollama. Quality controls how long VoiceBar waits for local cleanup before falling back to deterministic snippet-expanded insertion.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -448,6 +465,30 @@ struct SettingsRootView: View {
                 Text("Actions only run from the local allowlist. Shell commands from the formatter are never executed.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle("Save Recent Dictations for Recovery", isOn: Binding(
+                        get: { appState.preferences.saveRecentDictationsForRecovery },
+                        set: { appState.setSaveRecentDictationsForRecovery($0) }
+                    ))
+
+                    Stepper(
+                        "Keep last \(appState.preferences.dictationHistoryRetentionLimit) dictation\(appState.preferences.dictationHistoryRetentionLimit == 1 ? "" : "s")",
+                        value: Binding(
+                            get: { appState.preferences.dictationHistoryRetentionLimit },
+                            set: { appState.setDictationHistoryRetentionLimit($0) }
+                        ),
+                        in: VoiceBarPreferences.minimumDictationHistoryRetentionLimit...VoiceBarPreferences.maximumDictationHistoryRetentionLimit,
+                        step: 1
+                    )
+                    .disabled(appState.preferences.saveRecentDictationsForRecovery == false)
+
+                    Text("VoiceBar saves the raw transcript and final formatted text locally before insertion, so a wrong cursor or failed paste does not lose the dictation. Diagnostics still record counts only, not dictated text.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.top, 4)
             }
 
             Section("Files") {
@@ -538,6 +579,15 @@ struct SettingsRootView: View {
                     .textSelection(.enabled)
             }
 
+            Section("Recent Dictations") {
+                dictationHistoryPanel
+
+                Text(appState.dictationHistoryStatus)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+
             if !appState.lastDictationSummary.isEmpty {
                 Section("Last Result") {
                     Text(appState.lastDictationSummary)
@@ -548,6 +598,132 @@ struct SettingsRootView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private var dictationHistoryPanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Button {
+                    Task {
+                        await appState.reloadDictationHistory()
+                    }
+                } label: {
+                    Label("Reload", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
+
+                Button {
+                    appState.copyLastDictationToClipboard()
+                } label: {
+                    Label("Copy Last Dictation", systemImage: "doc.on.doc")
+                }
+                .buttonStyle(.bordered)
+                .disabled(appState.canCopyLastDictation == false)
+
+                Button {
+                    Task {
+                        await appState.retryInsertLastDictation()
+                    }
+                } label: {
+                    Label("Retry Insert Last Dictation", systemImage: "arrow.uturn.forward")
+                }
+                .buttonStyle(.bordered)
+                .disabled(appState.canRetryLastDictation == false)
+
+                Spacer()
+
+                Button(role: .destructive) {
+                    Task {
+                        await appState.clearDictationHistory()
+                    }
+                } label: {
+                    Label("Clear History", systemImage: "trash")
+                }
+                .buttonStyle(.bordered)
+                .disabled(appState.recentDictationHistoryEntries.isEmpty)
+            }
+
+            if appState.recentDictationHistoryEntries.isEmpty {
+                ContentUnavailableView(
+                    "No recent dictations",
+                    systemImage: "text.bubble",
+                    description: Text("Enable local recovery above, then VoiceBar will save the raw transcript and formatted text before each insertion.")
+                )
+                .frame(maxWidth: .infinity, minHeight: 160)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        ForEach(appState.recentDictationHistoryEntries) { entry in
+                            dictationHistoryEntryCard(entry)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                .frame(minHeight: 220, maxHeight: 420)
+            }
+        }
+    }
+
+    private func dictationHistoryEntryCard(_ entry: DictationHistoryEntry) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(entry.createdAt.formatted(date: .abbreviated, time: .shortened))
+                        .font(.callout.weight(.semibold))
+                    Text("\(entry.formattedCharacterCount.formatted()) formatted characters · \(entry.formatterPath.rawValue)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Button("Copy") {
+                    appState.copyDictationHistoryEntry(id: entry.id)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Button("Retry Insert") {
+                    Task {
+                        await appState.retryInsertDictationHistoryEntry(id: entry.id)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(appState.canRetryLastDictation == false)
+            }
+
+            Text(entry.formattedText)
+                .font(.body)
+                .lineLimit(4)
+                .textSelection(.enabled)
+
+            DisclosureGroup("Raw transcript and insertion details") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Raw transcript")
+                        .font(.caption.weight(.semibold))
+                    Text(entry.rawTranscript)
+                        .font(.caption)
+                        .textSelection(.enabled)
+
+                    Text(entry.insertionSummary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+
+                    if let frontmostBundleIdentifier = entry.frontmostBundleIdentifier {
+                        Text("Target application: \(frontmostBundleIdentifier)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
+                .padding(.top, 4)
+            }
+            .font(.caption)
+        }
+        .padding(10)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
     }
 
     private var snippetManagementPanel: some View {

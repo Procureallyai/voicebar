@@ -5,6 +5,8 @@ struct FloatingControllerView: View {
     let onPauseResume: () -> Void
     let onStop: () -> Void
     let onReplay: () -> Void
+    let onCopyLastDictation: () -> Void
+    let onOpenDictationHistory: () -> Void
     let onDismiss: () -> Void
     @State private var pulse = false
 
@@ -120,6 +122,34 @@ struct FloatingControllerView: View {
                 .buttonStyle(.bordered)
                 .disabled(snapshot.canReplay == false)
                 .voiceBarPointingCursor()
+            }
+
+            if let dictationRecoveryText = snapshot.dictationRecoveryText {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(dictationRecoveryText)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+
+                    HStack(spacing: 8) {
+                        Button("Copy Again") {
+                            onCopyLastDictation()
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(snapshot.canCopyLastDictation == false)
+                        .voiceBarPointingCursor()
+
+                        Button("Open History") {
+                            onOpenDictationHistory()
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .voiceBarPointingCursor()
+                    }
+                }
+                .padding(10)
+                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
             }
         }
         .padding(16)

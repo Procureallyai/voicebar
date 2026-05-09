@@ -11,10 +11,12 @@ struct FloatingControllerSnapshot: Equatable {
     var dictationAutomaticallyStopsOnSilence: Bool
     var formatterModelText: String
     var formatterUsedFallback: Bool
+    var dictationRecoveryText: String?
     var pauseResumeTitle: String
     var canPauseResume: Bool
     var canStop: Bool
     var canReplay: Bool
+    var canCopyLastDictation: Bool
 }
 
 private final class FloatingPanel: NSPanel {
@@ -45,6 +47,8 @@ final class FloatingControllerPanelController {
         onPauseResume: @escaping () -> Void,
         onStop: @escaping () -> Void,
         onReplay: @escaping () -> Void,
+        onCopyLastDictation: @escaping () -> Void,
+        onOpenDictationHistory: @escaping () -> Void,
         onDismiss: @escaping () -> Void
     ) {
         guard isVisible else {
@@ -58,6 +62,8 @@ final class FloatingControllerPanelController {
             onPauseResume: onPauseResume,
             onStop: onStop,
             onReplay: onReplay,
+            onCopyLastDictation: onCopyLastDictation,
+            onOpenDictationHistory: onOpenDictationHistory,
             onDismiss: onDismiss
         )
 

@@ -42,6 +42,7 @@ Updated walkthrough video coming soon. VoiceBar is source-first today; the refre
 - Local formatter mode through Ollama when enabled.
 - Operator-defined snippets with explicit trigger phrases, aliases, and custom-vocabulary-style product-name corrections.
 - Command-text snippets that insert text only and never execute automatically.
+- Local dictation rescue buffer that saves recent raw and formatted dictations before insertion, so wrong-cursor mistakes can be recovered.
 - Local text-to-speech direction for selected text and clipboard text.
 - Accessibility-based selected-text workflows and a macOS Service path.
 - Privacy-conscious architecture that keeps snippets, transcripts, logs, screenshots, and recordings out of the public source tree.

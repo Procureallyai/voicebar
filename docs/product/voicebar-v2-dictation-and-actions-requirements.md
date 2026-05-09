@@ -90,6 +90,7 @@ See [voicebar-v2-formatter-prompt-contract.md](./voicebar-v2-formatter-prompt-co
 
 - dictation snippets: VoiceBar application-support `dictation-snippets.json`
 - action registry: VoiceBar application-support `dictation-actions.json`
+- dictation rescue history: VoiceBar application-support `dictation-history.json`, storing recent raw and formatted dictations locally for operator recovery
 - private snippet import source: local-only private application-support directory
 - private snippet import reports: local-only report directory below the private application-support directory
 - whisper.cpp runtime root: VoiceBar application-support runtime directory

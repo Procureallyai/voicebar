@@ -39,6 +39,25 @@ struct MenuBarContentView: View {
 
             Divider()
 
+            Button("Copy Last Dictation") {
+                appState.copyLastDictationToClipboard()
+            }
+            .disabled(appState.canCopyLastDictation == false)
+
+            Button("Retry Insert Last Dictation") {
+                Task {
+                    await appState.retryInsertLastDictation()
+                }
+            }
+            .disabled(appState.canRetryLastDictation == false)
+
+            Button("Show Recent Dictations") {
+                appState.selectSettingsTab(.dictation)
+                openSettings()
+            }
+
+            Divider()
+
             Button(appState.pauseResumeTitle) {
                 Task {
                     await appState.pauseOrResume()

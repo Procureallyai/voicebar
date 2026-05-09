@@ -217,6 +217,11 @@ If you are not validating through the full-Xcode exported app bundle, mark this 
 - Start a dictation capture and confirm VoiceBar records, stops, and transcribes locally.
 - If the Ollama formatter stalls, confirm VoiceBar falls back to snippet-expanded insertion instead of failing the whole dictation pass.
 - Confirm insertion-at-cursor only happens when the operator keeps that setting enabled.
+- Confirm Save Recent Dictations for Recovery is enabled by default and stores the formatted text plus raw transcript before insertion.
+- Confirm Copy Last Dictation and Retry Insert Last Dictation recover the latest formatted text if the cursor was in the wrong place.
+- Confirm Show Recent Dictations opens Settings > Dictation and shows only local history entries from VoiceBar Application Support.
+- Confirm Clear History removes the local dictation history.
+- Confirm dictation history diagnostics record character counts and redacted entry tokens only, not dictated text.
 - Confirm snippets are read from the VoiceBar application-support snippets file.
 - Confirm Local Snippets supports create, read, update, delete, enable, disable, multiline expansion editing, and explicit alias editing.
 - Confirm the Label field is presented as display-only and is not described as a spoken trigger.

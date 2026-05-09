@@ -103,6 +103,9 @@ final class VoiceBarAppState {
     var dictationSnippets: [DictationSnippet] = []
     var isWisprFlowSnippetImportInFlight = false
     var lastDictationSummary = "No dictation captured yet."
+    var dictationHistoryStatus = "Recent dictation recovery has not loaded yet."
+    var recentDictationHistoryEntries: [DictationHistoryEntry] = []
+    var lastDictationRecoveryConfirmation: String?
     var isDictationRecording = false
     var isDictationProcessing = false
 
@@ -277,6 +280,18 @@ final class VoiceBarAppState {
         playbackState.lastRequest != nil
     }
 
+    var canCopyLastDictation: Bool {
+        recentDictationHistoryEntries.first?.formattedText
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty == false
+    }
+
+    var canRetryLastDictation: Bool {
+        canCopyLastDictation
+            && isDictationRecording == false
+            && isDictationProcessing == false
+    }
+
     var currentVoiceOption: SpeechVoiceOption? {
         let voiceIdentifier = playbackState.lastRequest?.voiceIdentifier
             ?? preferences.selectedVoiceIdentifier
@@ -321,6 +336,7 @@ final class VoiceBarAppState {
         await refreshCaptureReadiness()
         await refreshDictationReadiness()
         await reloadDictationSnippets()
+        await reloadDictationHistory()
         startPlaybackObservationLoop()
 
         Task(priority: .background) { @MainActor [weak self] in
@@ -800,6 +816,14 @@ final class VoiceBarAppState {
         persistPreferences()
     }
 
+    func setDictationFormatterQualityMode(_ qualityMode: DictationFormatterQualityMode) {
+        preferences.dictationFormatterQualityMode = qualityMode
+        persistPreferences()
+        Task { @MainActor [weak self] in
+            await self?.refreshDictationReadiness()
+        }
+    }
+
     func setInsertDictationAtCursor(_ isEnabled: Bool) {
         preferences.insertDictationAtCursor = isEnabled
         persistPreferences()
@@ -813,6 +837,28 @@ final class VoiceBarAppState {
     func setDictationAudioConfirmationEnabled(_ isEnabled: Bool) {
         preferences.dictationAudioConfirmationEnabled = isEnabled
         persistPreferences()
+    }
+
+    func setSaveRecentDictationsForRecovery(_ isEnabled: Bool) {
+        preferences.saveRecentDictationsForRecovery = isEnabled
+        if isEnabled == false {
+            lastDictationRecoveryConfirmation = nil
+        }
+        persistPreferences()
+
+        statusMessage = isEnabled
+            ? "Recent dictation recovery is on. VoiceBar saves the raw and formatted text locally before insertion."
+            : "Recent dictation recovery is off. New dictations will not be saved to the local rescue buffer."
+    }
+
+    func setDictationHistoryRetentionLimit(_ retentionLimit: Int) {
+        preferences.dictationHistoryRetentionLimit = VoiceBarPreferences
+            .sanitizedDictationHistoryRetentionLimit(retentionLimit)
+        persistPreferences()
+
+        Task { @MainActor [weak self] in
+            await self?.trimDictationHistoryToPreference()
+        }
     }
 
     func setCopyFallbackEnabled(_ isEnabled: Bool) {
@@ -1150,6 +1196,129 @@ final class VoiceBarAppState {
         NSWorkspace.shared.activateFileViewerSelecting([VoiceBarStorageLocation.dictationActionsURL])
     }
 
+    func revealDictationHistoryInFinder() {
+        NSWorkspace.shared.activateFileViewerSelecting([VoiceBarStorageLocation.dictationHistoryURL])
+    }
+
+    func reloadDictationHistory() async {
+        do {
+            let entries = try await dependencies.dictationHistoryStore.loadEntries()
+            recentDictationHistoryEntries = entries
+            dictationHistoryStatus = entries.isEmpty
+                ? "No recent dictations are saved yet."
+                : "Loaded \(entries.count) recent dictation\(entries.count == 1 ? "" : "s") from the local rescue buffer."
+        } catch {
+            recentDictationHistoryEntries = []
+            lastDictationRecoveryConfirmation = nil
+            dictationHistoryStatus = "VoiceBar could not load recent dictations. \(describe(error))"
+        }
+    }
+
+    func copyLastDictationToClipboard() {
+        guard let entry = recentDictationHistoryEntries.first else {
+            statusMessage = "No recent dictation is available to copy."
+            return
+        }
+
+        copyDictationHistoryEntry(id: entry.id)
+    }
+
+    func copyDictationHistoryEntry(id: String) {
+        guard let entry = recentDictationHistoryEntries.first(where: { $0.id == id }) else {
+            statusMessage = "VoiceBar could not find that recent dictation."
+            return
+        }
+
+        let text = entry.formattedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.isEmpty == false else {
+            statusMessage = "That recent dictation has no formatted text to copy."
+            return
+        }
+
+        do {
+            try textInsertionService.copyToClipboard(text)
+            let message = "Copied \(formattedCharacterCount(text.count)) from recent dictation history."
+            statusMessage = message
+            dictationHistoryStatus = message
+            Task { [dependencies] in
+                await dependencies.diagnostics.record(
+                    DiagnosticEvent(
+                        name: "dictation.history.copied",
+                        detail: "entryToken=\(Self.redactedDiagnosticToken(for: entry.id)) formattedChars=\(text.count)"
+                    )
+                )
+            }
+        } catch {
+            statusMessage = "VoiceBar could not copy the recent dictation. \(describe(error))"
+        }
+    }
+
+    func retryInsertLastDictation() async {
+        guard isDictationRecording == false, isDictationProcessing == false else {
+            statusMessage = "VoiceBar cannot retry a recent dictation while another dictation is recording or processing."
+            return
+        }
+
+        guard let entry = recentDictationHistoryEntries.first else {
+            statusMessage = "No recent dictation is available to retry."
+            return
+        }
+
+        await retryInsertDictationHistoryEntry(id: entry.id)
+    }
+
+    func retryInsertDictationHistoryEntry(id: String) async {
+        guard isDictationRecording == false, isDictationProcessing == false else {
+            statusMessage = "VoiceBar cannot retry a recent dictation while another dictation is recording or processing."
+            return
+        }
+
+        guard let entry = recentDictationHistoryEntries.first(where: { $0.id == id }) else {
+            statusMessage = "VoiceBar could not find that recent dictation."
+            return
+        }
+
+        let text = entry.formattedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.isEmpty == false else {
+            statusMessage = "That recent dictation has no formatted text to retry."
+            return
+        }
+
+        let insertionSummary = await insertDictationOutputIfNeeded(text)
+        statusMessage = "Retried recent dictation. \(insertionSummary)"
+        dictationHistoryStatus = statusMessage
+        await updateDictationRecoveryEntryIfNeeded(
+            entryID: entry.id,
+            insertionSummary: "Retry: \(insertionSummary)"
+        )
+    }
+
+    func showRecentDictations() {
+        selectedSettingsTab = .dictation
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        statusMessage = "Recent dictations are available in Settings > Dictation."
+    }
+
+    func clearDictationHistory() async {
+        do {
+            try await dependencies.dictationHistoryStore.clearEntries()
+            recentDictationHistoryEntries = []
+            lastDictationRecoveryConfirmation = nil
+            dictationHistoryStatus = "Cleared recent dictation history from local storage."
+            statusMessage = dictationHistoryStatus
+            await dependencies.diagnostics.record(
+                DiagnosticEvent(
+                    name: "dictation.history.cleared",
+                    detail: "Recent dictation history was cleared by explicit operator action."
+                )
+            )
+        } catch {
+            dictationHistoryStatus = "VoiceBar could not clear recent dictation history. \(describe(error))"
+            statusMessage = dictationHistoryStatus
+        }
+    }
+
     func setLaunchAtLoginEnabled(_ isEnabled: Bool) {
         do {
             launchAtLoginStatus = try launchAtLoginManager.setEnabled(isEnabled)
@@ -1187,6 +1356,7 @@ final class VoiceBarAppState {
         let whisperStatusLine = "whisper.cpp: \(availabilitySummary(for: speechToTextAvailability))"
         let formatterStatusLine = "Ollama formatter: \(availabilitySummary(for: formatterStatus))"
         let formatterModelLine = "Formatter model: \(resolvedFormatterModel)"
+        let formatterQualityLine = "Formatter quality: \(preferences.dictationFormatterQualityMode.rawValue) (\(Int(OllamaFormatterService.requestTimeoutSeconds(for: preferences.dictationFormatterQualityMode)))s timeout)"
         let warmUpLine = "Formatter warm-up: \(formatterWarmUpStatus)"
         let fallbackLine = lastDictationFormatterUsedFallback
             ? "Last dictation used formatter fallback."
@@ -1196,6 +1366,7 @@ final class VoiceBarAppState {
             whisperStatusLine,
             formatterStatusLine,
             formatterModelLine,
+            formatterQualityLine,
             warmUpLine,
             fallbackLine
         ].joined(separator: "\n")
@@ -1413,10 +1584,12 @@ final class VoiceBarAppState {
                 dictationAutomaticallyStopsOnSilence: dictationAutomaticallyStopsOnSilence,
                 formatterModelText: "Formatter: \(lastDictationFormatterModelIdentifier)",
                 formatterUsedFallback: lastDictationFormatterUsedFallback,
+                dictationRecoveryText: lastDictationRecoveryConfirmation,
                 pauseResumeTitle: pauseResumeTitle,
                 canPauseResume: canPauseOrResume,
                 canStop: canStop,
-                canReplay: canReplayLast
+                canReplay: canReplayLast,
+                canCopyLastDictation: canCopyLastDictation
             ),
             isVisible: isVisible,
             onPauseResume: { [weak self] in
@@ -1433,6 +1606,12 @@ final class VoiceBarAppState {
                 Task { @MainActor in
                     await self?.replayLast()
                 }
+            },
+            onCopyLastDictation: { [weak self] in
+                self?.copyLastDictationToClipboard()
+            },
+            onOpenDictationHistory: { [weak self] in
+                self?.showRecentDictations()
             },
             onDismiss: { [weak self] in
                 self?.dismissFloatingController()
@@ -2043,6 +2222,7 @@ final class VoiceBarAppState {
             let pipelineResult = try await dependencies.dictationPipeline.processTranscript(
                 transcript,
                 formattingMode: preferences.dictationFormattingMode,
+                qualityMode: preferences.dictationFormatterQualityMode,
                 formatterModelIdentifier: preferences.formatterModelIdentifier,
                 frontmostBundleIdentifier: dictationTargetBundleIdentifier
             )
@@ -2054,9 +2234,17 @@ final class VoiceBarAppState {
             lastDictationFormatterModelIdentifier = pipelineResult.formatterModelIdentifier
             lastDictationFormatterUsedFallback = pipelineResult.formatterUsedFallback
 
+            let recoveryEntryID = await saveDictationRecoveryEntryIfNeeded(
+                pipelineResult: pipelineResult
+            )
+
             let insertionStartedAt = DispatchTime.now().uptimeNanoseconds
             let insertionSummary = await insertDictationOutputIfNeeded(
                 pipelineResult.insertionText
+            )
+            await updateDictationRecoveryEntryIfNeeded(
+                entryID: recoveryEntryID,
+                insertionSummary: insertionSummary
             )
             let insertionMilliseconds = elapsedMilliseconds(since: insertionStartedAt)
 
@@ -2076,11 +2264,16 @@ final class VoiceBarAppState {
             let insertionCharacterCount = pipelineResult.insertionText
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .count
+            lastDictationRecoveryConfirmation = recoveryConfirmationMessage(
+                insertionCharacterCount: insertionCharacterCount,
+                insertionSummary: insertionSummary
+            )
 
             let summaryParts = [
                 "Formatter: \(pipelineResult.formatterPath.rawValue) using \(pipelineResult.formatterModelIdentifier)",
                 pipelineResult.formatterStatusNote,
                 insertionSummary,
+                lastDictationRecoveryConfirmation,
                 actionSummary,
                 "Latency: capture \(formatMilliseconds(captureDurationMilliseconds)); transcribe \(formatMilliseconds(transcriptionMilliseconds)); snippets \(formatMilliseconds(snippetExpansionMilliseconds)); deterministic \(formatMilliseconds(deterministicFormattingMilliseconds)); formatter \(formatMilliseconds(formatterMilliseconds)); action routing \(formatMilliseconds(actionRoutingMilliseconds)); insertion \(formatMilliseconds(insertionMilliseconds)); action run \(formatMilliseconds(actionExecutionMilliseconds)); total post-capture \(formatMilliseconds(totalPostCaptureMilliseconds))."
             ]
@@ -2123,6 +2316,92 @@ final class VoiceBarAppState {
                 )
             )
             await refreshDiagnostics()
+        }
+    }
+
+    private func saveDictationRecoveryEntryIfNeeded(
+        pipelineResult: DictationPipelineResult
+    ) async -> String? {
+        guard preferences.saveRecentDictationsForRecovery else {
+            return nil
+        }
+
+        let formattedText = pipelineResult.insertionText
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard formattedText.isEmpty == false else {
+            return nil
+        }
+
+        let entry = DictationHistoryEntry(
+            rawTranscript: pipelineResult.rawTranscript,
+            formattedText: formattedText,
+            formatterPath: pipelineResult.formatterPath,
+            formatterModelIdentifier: pipelineResult.formatterModelIdentifier,
+            frontmostBundleIdentifier: dictationTargetBundleIdentifier,
+            insertionSummary: "Insertion: pending.",
+            rawTranscriptCharacterCount: pipelineResult.rawTranscript.count,
+            formattedCharacterCount: formattedText.count
+        )
+
+        do {
+            let entries = try await dependencies.dictationHistoryStore.saveEntry(
+                entry,
+                retentionLimit: preferences.dictationHistoryRetentionLimit
+            )
+            recentDictationHistoryEntries = entries
+            dictationHistoryStatus = "Saved \(formattedCharacterCount(formattedText.count)) to the local dictation rescue buffer before insertion."
+            await dependencies.diagnostics.record(
+                DiagnosticEvent(
+                    name: "dictation.history.saved",
+                    detail: "entryToken=\(Self.redactedDiagnosticToken(for: entry.id)) rawChars=\(entry.rawTranscriptCharacterCount) formattedChars=\(entry.formattedCharacterCount) formatterPath=\(entry.formatterPath.rawValue) retentionLimit=\(preferences.dictationHistoryRetentionLimit)"
+                )
+            )
+            return entry.id
+        } catch {
+            dictationHistoryStatus = "VoiceBar could not save this dictation for recovery. \(describe(error))"
+            await dependencies.diagnostics.record(
+                DiagnosticEvent(
+                    name: "dictation.history.save.failed",
+                    detail: "rawChars=\(pipelineResult.rawTranscript.count) formattedChars=\(formattedText.count) error=\(describe(error))"
+                )
+            )
+            return nil
+        }
+    }
+
+    private func updateDictationRecoveryEntryIfNeeded(
+        entryID: String?,
+        insertionSummary: String
+    ) async {
+        guard let entryID else {
+            return
+        }
+
+        do {
+            recentDictationHistoryEntries = try await dependencies.dictationHistoryStore
+                .updateInsertionSummary(
+                    entryID: entryID,
+                    insertionSummary: insertionSummary,
+                    retentionLimit: preferences.dictationHistoryRetentionLimit
+                )
+        } catch {
+            await dependencies.diagnostics.record(
+                DiagnosticEvent(
+                    name: "dictation.history.update.failed",
+                    detail: "entryToken=\(Self.redactedDiagnosticToken(for: entryID)) error=\(describe(error))"
+                )
+            )
+        }
+    }
+
+    private func trimDictationHistoryToPreference() async {
+        do {
+            recentDictationHistoryEntries = try await dependencies.dictationHistoryStore.trimEntries(
+                retentionLimit: preferences.dictationHistoryRetentionLimit
+            )
+            dictationHistoryStatus = "Recent dictation history now keeps up to \(preferences.dictationHistoryRetentionLimit) item\(preferences.dictationHistoryRetentionLimit == 1 ? "" : "s")."
+        } catch {
+            dictationHistoryStatus = "VoiceBar could not trim recent dictation history. \(describe(error))"
         }
     }
 
@@ -2657,6 +2936,28 @@ final class VoiceBarAppState {
 
     private func formatMilliseconds(_ milliseconds: Int) -> String {
         "\(max(0, milliseconds))ms"
+    }
+
+    private func formattedCharacterCount(_ characterCount: Int) -> String {
+        "\(max(0, characterCount).formatted()) character\(characterCount == 1 ? "" : "s")"
+    }
+
+    private func recoveryConfirmationMessage(
+        insertionCharacterCount: Int,
+        insertionSummary: String
+    ) -> String? {
+        guard
+            preferences.saveRecentDictationsForRecovery,
+            insertionCharacterCount > 0
+        else {
+            return nil
+        }
+
+        let actionVerb = insertionSummary.localizedCaseInsensitiveContains("pasted at the cursor")
+            ? "Inserted"
+            : "Saved"
+
+        return "\(actionVerb) \(insertionCharacterCount.formatted()) character\(insertionCharacterCount == 1 ? "" : "s"). Copy again / Open history."
     }
 
     private func elapsedMilliseconds(since startNanoseconds: UInt64) -> Int {

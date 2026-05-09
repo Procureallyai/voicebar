@@ -39,3 +39,18 @@ public protocol DictationSnippetStore: Sendable {
 public protocol DictationActionRegistryStore: Sendable {
     func loadActions() async throws -> [DictationActionDefinition]
 }
+
+public protocol DictationHistoryStore: Sendable {
+    func loadEntries() async throws -> [DictationHistoryEntry]
+    func saveEntry(
+        _ entry: DictationHistoryEntry,
+        retentionLimit: Int
+    ) async throws -> [DictationHistoryEntry]
+    func updateInsertionSummary(
+        entryID: String,
+        insertionSummary: String,
+        retentionLimit: Int
+    ) async throws -> [DictationHistoryEntry]
+    func trimEntries(retentionLimit: Int) async throws -> [DictationHistoryEntry]
+    func clearEntries() async throws
+}

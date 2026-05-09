@@ -10,6 +10,7 @@ public struct DependencyContainer: Sendable {
     public var speechToTextService: SpeechToTextService
     public var dictationFormatterService: DictationFormatterService
     public var dictationPipeline: DictationPipeline
+    public var dictationHistoryStore: DictationHistoryStore
 
     public init(
         textCaptureService: TextCaptureService,
@@ -22,7 +23,8 @@ public struct DependencyContainer: Sendable {
         diagnostics: DiagnosticsCapture,
         speechToTextService: SpeechToTextService,
         dictationFormatterService: DictationFormatterService,
-        dictationPipeline: DictationPipeline
+        dictationPipeline: DictationPipeline,
+        dictationHistoryStore: DictationHistoryStore
     ) {
         self.textCaptureService = textCaptureService
         self.textNormalizationService = textNormalizationService
@@ -35,6 +37,7 @@ public struct DependencyContainer: Sendable {
         self.speechToTextService = speechToTextService
         self.dictationFormatterService = dictationFormatterService
         self.dictationPipeline = dictationPipeline
+        self.dictationHistoryStore = dictationHistoryStore
     }
 
     public static func live() -> DependencyContainer {
@@ -50,6 +53,7 @@ public struct DependencyContainer: Sendable {
         let formatterService = OllamaFormatterService()
         let snippetStore = JSONDictationSnippetStore()
         let actionStore = JSONDictationActionRegistryStore()
+        let historyStore = JSONDictationHistoryStore()
 
         return DependencyContainer(
             textCaptureService: LiveTextCaptureService(),
@@ -70,7 +74,8 @@ public struct DependencyContainer: Sendable {
                 formatterService: formatterService,
                 snippetStore: snippetStore,
                 actionStore: actionStore
-            )
+            ),
+            dictationHistoryStore: historyStore
         )
     }
 }
