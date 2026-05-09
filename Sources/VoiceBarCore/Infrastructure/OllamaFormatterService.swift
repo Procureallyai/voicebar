@@ -241,14 +241,14 @@ public struct OllamaFormatterService: DictationFormatterService {
             }
 
             if transcriptCharacterCount <= 320 {
-                return 6
+                return 8
             }
 
             if transcriptCharacterCount <= 700 {
-                return 7
+                return 10
             }
 
-            return 8
+            return 12
         case .quality:
             if transcriptCharacterCount <= 120 {
                 return baseTimeout
@@ -386,10 +386,14 @@ public struct OllamaFormatterService: DictationFormatterService {
             throw DictationRuntimeError.formattingFailed("Formatter response was not a JSON object.")
         }
 
-        let formattedText = stringValue(for: object, keys: ["formattedText", "formatted_text", "text", "output"])
-            ?? ""
-        let cleanedText = stringValue(for: object, keys: ["cleanedText", "cleaned_text", "cleaned"])
-            ?? formattedText
+        let formattedTextValue = stringValue(for: object, keys: ["formattedText", "formatted_text"])
+        let cleanedTextValue = stringValue(for: object, keys: ["cleanedText", "cleaned_text", "cleaned"])
+        guard formattedTextValue != nil || cleanedTextValue != nil else {
+            throw DictationRuntimeError.formattingFailed("Formatter response did not include formatter text fields.")
+        }
+
+        let formattedText = formattedTextValue ?? cleanedTextValue ?? ""
+        let cleanedText = cleanedTextValue ?? formattedText
         let detectedMode = detectedModeValue(for: object["detectedMode"] ?? object["detected_mode"])
         let defaultShouldInsertText = formattedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
         let shouldInsertText = boolValue(for: object["shouldInsertText"] ?? object["should_insert_text"])

@@ -74,6 +74,56 @@ final class OllamaFormatterServiceTests: XCTestCase {
         XCTAssertTrue(response.shouldInsertText)
     }
 
+    func testDecodeFormatterResponseSkipsUnrelatedJSONBeforeRealFormatterPayload() throws {
+        let response = try OllamaFormatterService.decodeFormatterResponse(
+            from: envelopeData(
+                content: """
+                {
+                  "note": "not the formatter payload"
+                }
+                Here is the actual formatter result:
+                {
+                  "cleanedText": "hi",
+                  "formattedText": "Hi.",
+                  "detectedMode": "dictation",
+                  "snippetApplications": [],
+                  "actionCandidates": [],
+                  "shouldInsertText": true
+                }
+                """
+            )
+        )
+
+        XCTAssertEqual(response.cleanedText, "hi")
+        XCTAssertEqual(response.formattedText, "Hi.")
+        XCTAssertTrue(response.shouldInsertText)
+    }
+
+    func testDecodeFormatterResponseSkipsGenericOutputJSONBeforeRealFormatterPayload() throws {
+        let response = try OllamaFormatterService.decodeFormatterResponse(
+            from: envelopeData(
+                content: """
+                {
+                  "output": "not the formatter payload"
+                }
+                Here is the actual formatter result:
+                {
+                  "cleanedText": "hi",
+                  "formattedText": "Hi.",
+                  "detectedMode": "dictation",
+                  "snippetApplications": [],
+                  "actionCandidates": [],
+                  "shouldInsertText": true
+                }
+                """
+            )
+        )
+
+        XCTAssertEqual(response.cleanedText, "hi")
+        XCTAssertEqual(response.formattedText, "Hi.")
+        XCTAssertTrue(response.shouldInsertText)
+    }
+
     func testDecodeFormatterResponseTrimsLenientDetectedMode() throws {
         let response = try OllamaFormatterService.decodeFormatterResponse(
             from: envelopeData(
@@ -110,7 +160,7 @@ final class OllamaFormatterServiceTests: XCTestCase {
                 for: .balanced,
                 transcriptCharacterCount: 243
             ),
-            6
+            8
         )
         XCTAssertEqual(
             OllamaFormatterService.requestTimeoutSeconds(
