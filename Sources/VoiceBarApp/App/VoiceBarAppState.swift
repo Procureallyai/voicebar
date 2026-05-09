@@ -1356,7 +1356,10 @@ final class VoiceBarAppState {
         let whisperStatusLine = "whisper.cpp: \(availabilitySummary(for: speechToTextAvailability))"
         let formatterStatusLine = "Ollama formatter: \(availabilitySummary(for: formatterStatus))"
         let formatterModelLine = "Formatter model: \(resolvedFormatterModel)"
-        let formatterQualityLine = "Formatter quality: \(preferences.dictationFormatterQualityMode.rawValue) (\(Int(OllamaFormatterService.requestTimeoutSeconds(for: preferences.dictationFormatterQualityMode)))s base timeout)"
+        let formatterBaseTimeout = OllamaFormatterService.formattedTimeoutSeconds(
+            OllamaFormatterService.requestTimeoutSeconds(for: preferences.dictationFormatterQualityMode)
+        )
+        let formatterQualityLine = "Formatter quality: \(preferences.dictationFormatterQualityMode.rawValue) (\(formatterBaseTimeout)s base timeout)"
         let warmUpLine = "Formatter warm-up: \(formatterWarmUpStatus)"
         let fallbackLine = lastDictationFormatterUsedFallback
             ? "Last dictation used formatter fallback."

@@ -163,7 +163,7 @@ public struct OllamaFormatterService: DictationFormatterService {
             (responseData, response) = try await session.data(for: urlRequest)
         } catch let error as URLError where error.code == .timedOut {
             throw DictationRuntimeError.formattingFailed(
-                "Ollama formatter timed out after \(formatSeconds(requestTimeoutSeconds))s using \(model) in \(request.qualityMode.rawValue) mode. VoiceBar inserted deterministic output without LLM cleanup."
+                "Ollama formatter timed out after \(Self.formattedTimeoutSeconds(requestTimeoutSeconds))s using \(model) in \(request.qualityMode.rawValue) mode. VoiceBar inserted deterministic output without LLM cleanup."
             )
         } catch {
             throw DictationRuntimeError.formattingFailed(
@@ -262,6 +262,15 @@ public struct OllamaFormatterService: DictationFormatterService {
         }
     }
 
+    public static func formattedTimeoutSeconds(_ seconds: TimeInterval) -> String {
+        let rounded = seconds.rounded()
+        if rounded == seconds {
+            return "\(Int(rounded))"
+        }
+
+        return String(format: "%.1f", seconds)
+    }
+
     private func apiBaseURL() -> URL {
         let host = ProcessInfo.processInfo.environment[Self.hostOverrideEnvironmentKey]
             ?? "http://127.0.0.1:11434/api"
@@ -279,15 +288,6 @@ public struct OllamaFormatterService: DictationFormatterService {
         """
     }
 
-    private func formatSeconds(_ seconds: TimeInterval) -> String {
-        let rounded = seconds.rounded()
-        if rounded == seconds {
-            return "\(Int(rounded))"
-        }
-
-        return String(format: "%.1f", seconds)
-    }
-
     private static func responseTokenLimit(for transcriptCharacterCount: Int) -> Int {
         min(1024, max(256, transcriptCharacterCount * 2 + 128))
     }
@@ -299,7 +299,7 @@ public struct OllamaFormatterService: DictationFormatterService {
         appendUnique(trimmedContent, to: &candidates)
         appendUnique(stripMarkdownFence(from: trimmedContent), to: &candidates)
 
-        if let extractedObject = extractJSONObject(from: trimmedContent) {
+        for extractedObject in extractJSONObjects(from: trimmedContent) {
             appendUnique(extractedObject, to: &candidates)
         }
 
@@ -323,16 +323,52 @@ public struct OllamaFormatterService: DictationFormatterService {
         return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func extractJSONObject(from content: String) -> String? {
-        guard
-            let startIndex = content.firstIndex(of: "{"),
-            let endIndex = content.lastIndex(of: "}"),
-            startIndex <= endIndex
-        else {
-            return nil
+    private static func extractJSONObjects(from content: String) -> [String] {
+        var objects: [String] = []
+        var objectStartIndex: String.Index?
+        var depth = 0
+        var isInsideString = false
+        var isEscaped = false
+        var currentIndex = content.startIndex
+
+        while currentIndex < content.endIndex {
+            let character = content[currentIndex]
+
+            if isInsideString {
+                if isEscaped {
+                    isEscaped = false
+                } else if character == "\\" {
+                    isEscaped = true
+                } else if character == "\"" {
+                    isInsideString = false
+                }
+            } else {
+                switch character {
+                case "\"":
+                    isInsideString = true
+                case "{":
+                    if depth == 0 {
+                        objectStartIndex = currentIndex
+                    }
+                    depth += 1
+                case "}":
+                    guard depth > 0 else {
+                        break
+                    }
+                    depth -= 1
+                    if depth == 0, let startIndex = objectStartIndex {
+                        objects.append(String(content[startIndex...currentIndex]))
+                        objectStartIndex = nil
+                    }
+                default:
+                    break
+                }
+            }
+
+            currentIndex = content.index(after: currentIndex)
         }
 
-        return String(content[startIndex...endIndex])
+        return objects
     }
 
     private static func appendUnique(_ value: String, to candidates: inout [String]) {
@@ -392,7 +428,10 @@ public struct OllamaFormatterService: DictationFormatterService {
             return .dictation
         }
 
-        return DictationDetectedMode(rawValue: value.lowercased()) ?? .dictation
+        let normalizedValue = value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return DictationDetectedMode(rawValue: normalizedValue) ?? .dictation
     }
 
     private static func boolValue(for value: Any?) -> Bool? {

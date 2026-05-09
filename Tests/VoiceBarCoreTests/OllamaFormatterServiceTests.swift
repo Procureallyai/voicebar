@@ -51,6 +51,52 @@ final class OllamaFormatterServiceTests: XCTestCase {
         XCTAssertEqual(response.confidence, 0.84)
     }
 
+    func testDecodeFormatterResponseFindsValidBalancedObjectAfterInvalidBraces() throws {
+        let response = try OllamaFormatterService.decodeFormatterResponse(
+            from: envelopeData(
+                content: """
+                Intro { not json } Here is the corrected JSON:
+                {
+                  "cleanedText": "hi",
+                  "formattedText": "Hi.",
+                  "detectedMode": "dictation",
+                  "snippetApplications": [],
+                  "actionCandidates": [],
+                  "shouldInsertText": true
+                }
+                trailing }
+                """
+            )
+        )
+
+        XCTAssertEqual(response.formattedText, "Hi.")
+        XCTAssertEqual(response.detectedMode, .dictation)
+        XCTAssertTrue(response.shouldInsertText)
+    }
+
+    func testDecodeFormatterResponseTrimsLenientDetectedMode() throws {
+        let response = try OllamaFormatterService.decodeFormatterResponse(
+            from: envelopeData(
+                content: """
+                {
+                  "cleaned_text": "open dashboard",
+                  "formatted_text": "Open dashboard.",
+                  "detected_mode": " command ",
+                  "should_insert_text": "false"
+                }
+                """
+            )
+        )
+
+        XCTAssertEqual(response.detectedMode, .command)
+        XCTAssertFalse(response.shouldInsertText)
+    }
+
+    func testFormattedTimeoutSecondsPreservesFractionalOverrideDisplay() {
+        XCTAssertEqual(OllamaFormatterService.formattedTimeoutSeconds(2), "2")
+        XCTAssertEqual(OllamaFormatterService.formattedTimeoutSeconds(2.5), "2.5")
+    }
+
     func testAdaptiveTimeoutExtendsBalancedForLongerDictation() {
         XCTAssertEqual(
             OllamaFormatterService.requestTimeoutSeconds(
