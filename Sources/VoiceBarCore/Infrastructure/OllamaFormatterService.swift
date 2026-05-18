@@ -120,14 +120,19 @@ public struct OllamaFormatterService: DictationFormatterService {
 
         // Capture the resolved model early for use in diagnostics (e.g., timeout messages)
         let model = resolvedModelIdentifier(for: request.formatterModelIdentifier)
-        let requestTimeoutSeconds = Self.requestTimeoutSeconds(for: request.qualityMode)
+        let requestTimeoutSeconds = Self.requestTimeoutSeconds(
+            for: request.qualityMode,
+            transcriptCharacterCount: request.transcript.count
+        )
 
         let payload: [String: Any] = [
             "model": model,
             "stream": false,
             "format": schema,
+            "keep_alive": "10m",
             "options": [
-                "temperature": 0
+                "temperature": 0,
+                "num_predict": Self.responseTokenLimit(for: request.transcript.count)
             ],
             "messages": [
                 [
@@ -158,7 +163,7 @@ public struct OllamaFormatterService: DictationFormatterService {
             (responseData, response) = try await session.data(for: urlRequest)
         } catch let error as URLError where error.code == .timedOut {
             throw DictationRuntimeError.formattingFailed(
-                "Ollama formatter timed out after \(formatSeconds(requestTimeoutSeconds))s using \(model) in \(request.qualityMode.rawValue) mode. VoiceBar inserted deterministic output without LLM cleanup."
+                "Ollama formatter timed out after \(Self.formattedTimeoutSeconds(requestTimeoutSeconds))s using \(model) in \(request.qualityMode.rawValue) mode. VoiceBar inserted deterministic output without LLM cleanup."
             )
         } catch {
             throw DictationRuntimeError.formattingFailed(
@@ -192,19 +197,28 @@ public struct OllamaFormatterService: DictationFormatterService {
             )
         }
 
-        do {
-            return try JSONDecoder().decode(
+        for candidate in Self.responseJSONCandidates(from: content) {
+            if let response = try? JSONDecoder().decode(
                 DictationFormatterResponse.self,
-                from: Data(content.utf8)
-            )
-        } catch {
-            throw DictationRuntimeError.formattingFailed(
-                "VoiceBar could not decode the formatter response schema. \(error.localizedDescription)"
-            )
+                from: Data(candidate.utf8)
+            ) {
+                return response
+            }
+
+            if let response = try? Self.decodeLenientFormatterResponse(from: candidate) {
+                return response
+            }
         }
+
+        throw DictationRuntimeError.formattingFailed(
+            "VoiceBar could not decode the formatter response schema after tolerant JSON extraction."
+        )
     }
 
-    public static func requestTimeoutSeconds(for qualityMode: DictationFormatterQualityMode) -> TimeInterval {
+    public static func requestTimeoutSeconds(
+        for qualityMode: DictationFormatterQualityMode,
+        transcriptCharacterCount: Int? = nil
+    ) -> TimeInterval {
         let timeoutOverride = ProcessInfo.processInfo.environment[Self.timeoutOverrideEnvironmentKey]?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let overriddenTimeout = timeoutOverride.flatMap { TimeInterval($0) }
@@ -213,7 +227,48 @@ public struct OllamaFormatterService: DictationFormatterService {
             return overriddenTimeout
         }
 
-        return qualityMode.timeoutSeconds
+        let baseTimeout = qualityMode.timeoutSeconds
+        guard let transcriptCharacterCount else {
+            return baseTimeout
+        }
+
+        switch qualityMode {
+        case .fast:
+            return baseTimeout
+        case .balanced:
+            if transcriptCharacterCount <= 120 {
+                return baseTimeout
+            }
+
+            if transcriptCharacterCount <= 320 {
+                return 8
+            }
+
+            if transcriptCharacterCount <= 700 {
+                return 10
+            }
+
+            return 12
+        case .quality:
+            if transcriptCharacterCount <= 120 {
+                return baseTimeout
+            }
+
+            if transcriptCharacterCount <= 700 {
+                return 10
+            }
+
+            return 12
+        }
+    }
+
+    public static func formattedTimeoutSeconds(_ seconds: TimeInterval) -> String {
+        let rounded = seconds.rounded()
+        if rounded == seconds {
+            return "\(Int(rounded))"
+        }
+
+        return String(format: "%.1f", seconds)
     }
 
     private func apiBaseURL() -> URL {
@@ -233,13 +288,204 @@ public struct OllamaFormatterService: DictationFormatterService {
         """
     }
 
-    private func formatSeconds(_ seconds: TimeInterval) -> String {
-        let rounded = seconds.rounded()
-        if rounded == seconds {
-            return "\(Int(rounded))"
+    private static func responseTokenLimit(for transcriptCharacterCount: Int) -> Int {
+        min(1024, max(256, transcriptCharacterCount * 2 + 128))
+    }
+
+    private static func responseJSONCandidates(from content: String) -> [String] {
+        var candidates: [String] = []
+        let trimmedContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        appendUnique(trimmedContent, to: &candidates)
+        appendUnique(stripMarkdownFence(from: trimmedContent), to: &candidates)
+
+        for extractedObject in extractJSONObjects(from: trimmedContent) {
+            appendUnique(extractedObject, to: &candidates)
         }
 
-        return String(format: "%.1f", seconds)
+        return candidates.filter { $0.isEmpty == false }
+    }
+
+    private static func stripMarkdownFence(from content: String) -> String {
+        guard content.hasPrefix("```") else {
+            return content
+        }
+
+        var lines = content.components(separatedBy: .newlines)
+        if lines.first?.hasPrefix("```") == true {
+            lines.removeFirst()
+        }
+
+        if lines.last?.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("```") == true {
+            lines.removeLast()
+        }
+
+        return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func extractJSONObjects(from content: String) -> [String] {
+        var objects: [String] = []
+        var objectStartIndex: String.Index?
+        var depth = 0
+        var isInsideString = false
+        var isEscaped = false
+        var currentIndex = content.startIndex
+
+        while currentIndex < content.endIndex {
+            let character = content[currentIndex]
+
+            if isInsideString {
+                if isEscaped {
+                    isEscaped = false
+                } else if character == "\\" {
+                    isEscaped = true
+                } else if character == "\"" {
+                    isInsideString = false
+                }
+            } else {
+                switch character {
+                case "\"":
+                    isInsideString = true
+                case "{":
+                    if depth == 0 {
+                        objectStartIndex = currentIndex
+                    }
+                    depth += 1
+                case "}":
+                    guard depth > 0 else {
+                        break
+                    }
+                    depth -= 1
+                    if depth == 0, let startIndex = objectStartIndex {
+                        objects.append(String(content[startIndex...currentIndex]))
+                        objectStartIndex = nil
+                    }
+                default:
+                    break
+                }
+            }
+
+            currentIndex = content.index(after: currentIndex)
+        }
+
+        return objects
+    }
+
+    private static func appendUnique(_ value: String, to candidates: inout [String]) {
+        let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedValue.isEmpty == false, candidates.contains(trimmedValue) == false else {
+            return
+        }
+
+        candidates.append(trimmedValue)
+    }
+
+    private static func decodeLenientFormatterResponse(from content: String) throws -> DictationFormatterResponse {
+        let data = Data(content.utf8)
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw DictationRuntimeError.formattingFailed("Formatter response was not a JSON object.")
+        }
+
+        let formattedTextValue = stringValue(for: object, keys: ["formattedText", "formatted_text"])
+        let cleanedTextValue = stringValue(for: object, keys: ["cleanedText", "cleaned_text", "cleaned"])
+        guard formattedTextValue != nil || cleanedTextValue != nil else {
+            throw DictationRuntimeError.formattingFailed("Formatter response did not include formatter text fields.")
+        }
+
+        let formattedText = formattedTextValue ?? cleanedTextValue ?? ""
+        let cleanedText = cleanedTextValue ?? formattedText
+        let detectedMode = detectedModeValue(for: object["detectedMode"] ?? object["detected_mode"])
+        let defaultShouldInsertText = formattedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        let shouldInsertText = boolValue(for: object["shouldInsertText"] ?? object["should_insert_text"])
+            ?? defaultShouldInsertText
+        let confidence = numberValue(for: object["confidence"])
+
+        return DictationFormatterResponse(
+            cleanedText: cleanedText,
+            formattedText: formattedText,
+            detectedMode: detectedMode,
+            snippetApplications: decodedArray(
+                DictationSnippetApplication.self,
+                from: object["snippetApplications"] ?? object["snippet_applications"]
+            ) ?? [],
+            actionCandidates: decodedArray(
+                DictationActionCandidate.self,
+                from: object["actionCandidates"] ?? object["action_candidates"]
+            ) ?? [],
+            shouldInsertText: shouldInsertText,
+            confidence: confidence
+        )
+    }
+
+    private static func stringValue(for object: [String: Any], keys: [String]) -> String? {
+        for key in keys {
+            if let value = object[key] as? String {
+                return value
+            }
+        }
+
+        return nil
+    }
+
+    private static func detectedModeValue(for value: Any?) -> DictationDetectedMode {
+        guard let value = value as? String else {
+            return .dictation
+        }
+
+        let normalizedValue = value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return DictationDetectedMode(rawValue: normalizedValue) ?? .dictation
+    }
+
+    private static func boolValue(for value: Any?) -> Bool? {
+        if let value = value as? Bool {
+            return value
+        }
+
+        guard let stringValue = value as? String else {
+            return nil
+        }
+
+        switch stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "true", "yes", "1":
+            return true
+        case "false", "no", "0":
+            return false
+        default:
+            return nil
+        }
+    }
+
+    private static func numberValue(for value: Any?) -> Double? {
+        if let value = value as? Double {
+            return value
+        }
+
+        if let value = value as? Int {
+            return Double(value)
+        }
+
+        if let value = value as? String {
+            return Double(value.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+
+        return nil
+    }
+
+    private static func decodedArray<Element: Decodable>(
+        _ type: Element.Type,
+        from value: Any?
+    ) -> [Element]? {
+        guard let value, JSONSerialization.isValidJSONObject(value) else {
+            return nil
+        }
+
+        guard let data = try? JSONSerialization.data(withJSONObject: value) else {
+            return nil
+        }
+
+        return try? JSONDecoder().decode([Element].self, from: data)
     }
 
     private static let voiceBarFormatterMetaPrompt = """

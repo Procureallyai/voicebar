@@ -14,10 +14,11 @@ This document defines the deterministic formatter/router contract for the local 
 - background warm-up allows up to 20 seconds for local cold model load, then keeps the model warm for the interactive formatter path
 - formatter quality modes:
   - Fast: 2-second timeout for preserving the lowest-latency dictation path
-  - Balanced: 4-second timeout and the default full formatter path
-  - Quality: 8-second timeout
+  - Balanced: 4-second base timeout and the default full formatter path, with adaptive extension for longer dictated text
+  - Quality: 8-second base timeout, with adaptive extension for longer dictated text
 - if the formatter does not answer promptly on the operator Mac, VoiceBar falls back to lightly polished deterministic insertion and exact allowlisted action matching rather than blocking dictation
 - successful model responses still pass through a final local punctuation polish before insertion, so missing question marks or unsupported exclamation marks do not leak into the writing path
+- formatter response decoding is tolerant of common local-model response-shape mistakes such as fenced JSON, extra prose around JSON, missing non-critical arrays, and string booleans
 
 ## Formatter Intent
 
@@ -115,5 +116,6 @@ The request payload should include:
 - run `bash scripts/benchmark-dictation-formatting.sh deterministic balanced` to verify deterministic and fallback writing quality without requiring live Ollama
 - run `bash scripts/benchmark-dictation-formatting.sh live-ollama balanced` and `bash scripts/benchmark-dictation-formatting.sh live-ollama quality` when Ollama is running locally to compare quality-mode latency
 - live benchmark mode performs a formatter warm-up before timing the cases, because the local `llama3.2:3b` cold load can exceed the interactive formatter timeout
+- include longer normal-use dictation samples when investigating fallback frequency, because short benchmark prompts can pass while longer operator utterances hit the adaptive timeout boundary
 - keep the current Prompt 017 benchmark truth explicit: raw Ollama generation responded locally, while schema-based formatter requests timed out for `gpt-oss:20b`, `mistral-small3.1`, and `llama3.2:3b`
 - keep any unresolved operator-fit questions labeled `Unverified`
